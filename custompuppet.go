@@ -72,8 +72,8 @@ func (puppet *Puppet) loginWithSharedSecret(mxid id.UserID) (string, error) {
 	}
 	req := mautrix.ReqLogin{
 		Identifier:               mautrix.UserIdentifier{Type: mautrix.IdentifierTypeUser, User: string(mxid)},
-		DeviceID:                 "WhatsApp Bridge",
-		InitialDeviceDisplayName: "WhatsApp Bridge",
+		DeviceID:                 "Puente WhatsApp",
+		InitialDeviceDisplayName: "Puente WhatsApp",
 	}
 	if loginSecret == "appservice" {
 		client.AccessToken = puppet.bridge.AS.Registration.AppToken

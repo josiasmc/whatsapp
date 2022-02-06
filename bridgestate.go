@@ -37,14 +37,14 @@ const (
 
 func init() {
 	status.BridgeStateHumanErrors.Update(status.BridgeStateErrorMap{
-		WALoggedOut:        "You were logged out from another device. Relogin to continue using the bridge.",
-		WAMainDeviceGone:   "Your phone was logged out from WhatsApp. Relogin to continue using the bridge.",
-		WAUnknownLogout:    "You were logged out for an unknown reason. Relogin to continue using the bridge.",
-		WANotConnected:     "You're not connected to WhatsApp",
-		WAConnecting:       "Reconnecting to WhatsApp...",
-		WAKeepaliveTimeout: "The WhatsApp web servers are not responding. The bridge will try to reconnect.",
-		WAPhoneOffline:     "Your phone hasn't been seen in over 12 days. The bridge is currently connected, but will get disconnected if you don't open the app soon.",
-		WAConnectionFailed: "Connecting to the WhatsApp web servers failed.",
+		WALoggedOut:        "La sesión fue cerrada desde otro dispositivo. Vuelva a iniciar sesión para continuar utilizando este puente.",
+		WAMainDeviceGone:   "La sesión fue cerrada desde tu teléfono. Vuelva a iniciar sesión para continuar utilizando este puente.",
+		WAUnknownLogout:    "La sesión fue cerrada por un motivo desconocido. Vuelva a iniciar sesión para continuar utilizando este puente.",
+		WANotConnected:     "No estás conectado a WhatsApp",
+		WAConnecting:       "Reconectando a WhatsApp...",
+		WAKeepaliveTimeout: "Los servidores de WhatsApp no están respondiendo. El puente intentará reconectarse.",
+		WAPhoneOffline:     "Su teléfono no se ha visto en más de 12 días. El puente está actualmente conectado, pero se desconectará si no abres la aplicación pronto.",
+		WAConnectionFailed: "Conectarse a los servidores de WhatsApp falló.",
 	})
 }
 

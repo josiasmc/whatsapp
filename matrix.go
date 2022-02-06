@@ -48,7 +48,7 @@ func (br *WABridge) CreatePrivatePortal(roomID id.RoomID, brInviter bridge.User,
 		return
 	}
 	intent := puppet.DefaultIntent()
-	errorMessage := fmt.Sprintf("You already have a private chat portal with me at [%[1]s](https://matrix.to/#/%[1]s)", portal.MXID)
+	errorMessage := fmt.Sprintf("Ya tienes un portal de chat privado conmigo en [%[1]s](https://matrix.to/#/%[1]s)", portal.MXID)
 	errorContent := format.RenderMarkdown(errorMessage, true, false)
 	_, _ = intent.SendMessageEvent(roomID, event.EventMessage, errorContent)
 	br.Log.Debugfln("Leaving private chat room %s as %s after accepting invite from %s as we already have chat with the user", roomID, puppet.MXID, inviter.MXID)
@@ -102,7 +102,7 @@ func (br *WABridge) createPrivatePortalFromInvite(roomID id.RoomID, inviter *Use
 	}
 	portal.Update(nil)
 	portal.UpdateBridgeInfo()
-	_, _ = intent.SendNotice(roomID, "Private chat portal created")
+	_, _ = intent.SendNotice(roomID, "Portal de chat privado creado")
 }
 
 func (br *WABridge) HandlePresence(evt *event.Event) {

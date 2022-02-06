@@ -67,7 +67,7 @@ func (portal *Portal) sleepAndDelete(msg *database.DisappearingMessage) {
 	portal.log.Debugfln("Sleeping for %s to make %s disappear", sleepTime, msg.EventID)
 	time.Sleep(sleepTime)
 	_, err := portal.MainIntent().RedactEvent(msg.RoomID, msg.EventID, mautrix.ReqRedact{
-		Reason: "Message expired",
+		Reason: "Mensaje expiró",
 		TxnID:  fmt.Sprintf("mxwa_disappear_%s", msg.EventID),
 	})
 	if err != nil {

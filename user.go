@@ -392,7 +392,7 @@ func (user *User) GetSpaceRoom() id.RoomID {
 		resp, err := user.bridge.Bot.CreateRoom(&mautrix.ReqCreateRoom{
 			Visibility: "private",
 			Name:       "WhatsApp",
-			Topic:      "Your WhatsApp bridged chats",
+			Topic:      "Tus chats de WhatsApp",
 			InitialState: []*event.Event{{
 				Type: event.StateRoomAvatar,
 				Content: event.Content{
@@ -439,7 +439,7 @@ func (user *User) GetManagementRoom() id.RoomID {
 			creationContent["m.federate"] = false
 		}
 		resp, err := user.bridge.Bot.CreateRoom(&mautrix.ReqCreateRoom{
-			Topic:           "WhatsApp bridge notices",
+			Topic:           "Notificaciones del puente WhatsApp",
 			IsDirect:        true,
 			CreationContent: creationContent,
 		})
@@ -642,7 +642,7 @@ func (user *User) handleCallStart(sender types.JID, id, callType string, ts time
 		return
 	}
 	portal := user.GetPortalByJID(sender)
-	text := "Incoming call"
+	text := "Llamada entrante"
 	if callType != "" {
 		text = fmt.Sprintf("Incoming %s call", callType)
 	}
@@ -722,11 +722,11 @@ func formatDisconnectTime(dur time.Duration) string {
 	days := int(math.Floor(dur.Hours() / 24))
 	hours := int(dur.Hours()) % 24
 	if hours == 0 {
-		return fmt.Sprintf("%d days", days)
+		return fmt.Sprintf("%d días", days)
 	} else if hours == 1 {
-		return fmt.Sprintf("%d days and 1 hour", days)
+		return fmt.Sprintf("%d días y 1 hora", days)
 	} else {
-		return fmt.Sprintf("%d days and %d hours", days, hours)
+		return fmt.Sprintf("%d días y %d horas", days, hours)
 	}
 }
 
@@ -737,7 +737,7 @@ func (user *User) sendPhoneOfflineWarning() {
 	}
 	user.lastPhoneOfflineWarning = time.Now()
 	timeSinceSeen := time.Now().Sub(user.PhoneLastSeen)
-	user.sendMarkdownBridgeAlert("Your phone hasn't been seen in %s. The server will force the bridge to log out if the phone is not active at least every 2 weeks.", formatDisconnectTime(timeSinceSeen))
+	user.sendMarkdownBridgeAlert("Su teléfono no se ha visto en %s. El servidor forzará al puente a finalizar la sesión si el teléfono no está activo al menos una vez cada 2 semanas.", formatDisconnectTime(timeSinceSeen))
 }
 
 func (user *User) HandleEvent(event interface{}) {
@@ -877,9 +877,9 @@ func (user *User) HandleEvent(event interface{}) {
 		puppet := user.bridge.GetPuppetByJID(v.JID)
 		portal := user.GetPortalByJID(v.JID)
 		if len(portal.MXID) > 0 && user.bridge.Config.Bridge.IdentityChangeNotices {
-			text := fmt.Sprintf("Your security code with %s changed.", puppet.Displayname)
+			text := fmt.Sprintf("Su código de seguridad con %s ha cambiado.", puppet.Displayname)
 			if v.Implicit {
-				text = fmt.Sprintf("Your security code with %s (device #%d) changed.", puppet.Displayname, v.JID.Device)
+				text = fmt.Sprintf("Su código de seguridad con %s (dispositivo #%d) cambió.", puppet.Displayname, v.JID.Device)
 			}
 			portal.messages <- PortalMessage{
 				fake: &fakeMessage{
@@ -1125,9 +1125,9 @@ func (user *User) handleLoggedOut(onConnect bool, reason events.ConnectFailureRe
 	user.JID = types.EmptyJID
 	user.Update()
 	if onConnect {
-		user.sendMarkdownBridgeAlert("Connecting to WhatsApp failed as the device was unlinked (error %s). Please link the bridge to your phone again.", reason)
+		user.sendMarkdownBridgeAlert("La conexión a WhatsApp falló ya que se desvinculó el dispositivo (error %s). Por favor vincule el puente al teléfono de nuevo.")
 	} else {
-		user.sendMarkdownBridgeAlert("You were logged out from another device. Please link the bridge to your phone again.")
+		user.sendMarkdownBridgeAlert("Su sesión fue cerrada desde otro dispositivo. Por favor conecte el puente al teléfono de nuevo.")
 	}
 }
 

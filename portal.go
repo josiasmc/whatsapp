@@ -68,11 +68,11 @@ import (
 	"maunium.net/go/mautrix-whatsapp/database"
 )
 
-const StatusBroadcastTopic = "WhatsApp status updates from your contacts"
-const StatusBroadcastName = "WhatsApp Status Broadcast"
-const BroadcastTopic = "WhatsApp broadcast list"
-const UnnamedBroadcastName = "Unnamed broadcast list"
-const PrivateChatTopic = "WhatsApp private chat"
+const StatusBroadcastTopic = "Estados de WhatsApp de tus contactos"
+const StatusBroadcastName = "Estados de WhatsApp"
+const BroadcastTopic = "Mensajes de difusión de WhatsApp"
+const UnnamedBroadcastName = "Difusión sin nombre"
+const PrivateChatTopic = "Chat privado de WhatsApp"
 
 var ErrStatusBroadcastDisabled = errors.New("status bridging is disabled")
 
@@ -489,9 +489,9 @@ func naturalJoin(parts []string) string {
 	} else if len(parts) == 1 {
 		return parts[0]
 	} else if len(parts) == 2 {
-		return fmt.Sprintf("%s and %s", parts[0], parts[1])
+		return fmt.Sprintf("%s y %s", parts[0], parts[1])
 	} else {
-		return fmt.Sprintf("%s and %s", strings.Join(parts[:len(parts)-1], ", "), parts[len(parts)-1])
+		return fmt.Sprintf("%s y %s", strings.Join(parts[:len(parts)-1], ", "), parts[len(parts)-1])
 	}
 }
 
@@ -506,16 +506,16 @@ func formatDuration(d time.Duration) string {
 
 	parts := make([]string, 0, 4)
 	if days > 0 {
-		parts = append(parts, pluralUnit(days, "day"))
+		parts = append(parts, pluralUnit(days, "día"))
 	}
 	if hours > 0 {
-		parts = append(parts, pluralUnit(hours, "hour"))
+		parts = append(parts, pluralUnit(hours, "hora"))
 	}
 	if minutes > 0 {
-		parts = append(parts, pluralUnit(seconds, "minute"))
+		parts = append(parts, pluralUnit(seconds, "minuto"))
 	}
 	if seconds > 0 {
-		parts = append(parts, pluralUnit(seconds, "second"))
+		parts = append(parts, pluralUnit(seconds, "segundo"))
 	}
 	return naturalJoin(parts)
 }
@@ -611,8 +611,8 @@ func (portal *Portal) formatDisappearingMessageNotice() string {
 	}
 }
 
-const UndecryptableMessageNotice = "Decrypting message from WhatsApp failed, waiting for sender to re-send... " +
-	"([learn more](https://faq.whatsapp.com/general/security-and-privacy/seeing-waiting-for-this-message-this-may-take-a-while))"
+const UndecryptableMessageNotice = "Fallo al decifrar mensaje de WhatsApp, esperando a que el contacto lo reenvíe... " +
+	"([aprender más](https://faq.whatsapp.com/general/security-and-privacy/seeing-waiting-for-this-message-this-may-take-a-while))"
 
 var undecryptableMessageContent event.MessageEventContent
 
@@ -919,7 +919,7 @@ func (portal *Portal) kickExtraUsers(participantMap map[types.JID]bool) {
 			if !shouldBePresent {
 				_, err = portal.MainIntent().KickUser(portal.MXID, &mautrix.ReqKickUser{
 					UserID: member,
-					Reason: "User had left this WhatsApp chat",
+					Reason: "El usuario había dejado este chat de WhatsApp",
 				})
 				if err != nil {
 					portal.log.Warnfln("Failed to kick user %s who had left: %v", member, err)
@@ -2299,7 +2299,7 @@ func (portal *Portal) convertLocationMessage(intent *appservice.IntentAPI, msg *
 	}
 }
 
-const inviteMsg = `%s<hr/>This invitation to join "%s" expires at %s. Reply to this message with <code>!wa accept</code> to accept the invite.`
+const inviteMsg = `%s<hr/>La invitación para unirse a "%s" expira en %s. Responda a este mensaje con <code>!wa aceptar</code> para aceptar la invitación.`
 const inviteMetaField = "fi.mau.whatsapp.invite"
 const escapedInviteMetaField = `fi\.mau\.whatsapp\.invite`
 
@@ -2380,7 +2380,7 @@ func (portal *Portal) convertContactMessage(intent *appservice.IntentAPI, msg *w
 func (portal *Portal) convertContactsArrayMessage(intent *appservice.IntentAPI, msg *waProto.ContactsArrayMessage) *ConvertedMessage {
 	name := msg.GetDisplayName()
 	if len(name) == 0 {
-		name = fmt.Sprintf("%d contacts", len(msg.GetContacts()))
+		name = fmt.Sprintf("%d contactos", len(msg.GetContacts()))
 	}
 	contacts := make([]*event.MessageEventContent, 0, len(msg.GetContacts()))
 	for _, contact := range msg.GetContacts() {
@@ -2394,7 +2394,7 @@ func (portal *Portal) convertContactsArrayMessage(intent *appservice.IntentAPI, 
 		Type:   event.EventMessage,
 		Content: &event.MessageEventContent{
 			MsgType: event.MsgNotice,
-			Body:    fmt.Sprintf("Sent %s", name),
+			Body:    fmt.Sprintf("Envió %s", name),
 		},
 		ReplyTo:    GetReply(msg.GetContextInfo()),
 		ExpiresIn:  msg.GetContextInfo().GetExpiration(),
