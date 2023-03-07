@@ -28,6 +28,7 @@ func DoUpgrade(helper *up.Helper) {
 	bridgeconfig.Upgrader.DoUpgrade(helper)
 
 	helper.Copy(up.Str|up.Null, "segment_key")
+	helper.Copy(up.Str|up.Null, "segment_user_id")
 
 	helper.Copy(up.Bool, "metrics", "enabled")
 	helper.Copy(up.Str, "metrics", "listen")
@@ -48,6 +49,9 @@ func DoUpgrade(helper *up.Helper) {
 	helper.Copy(up.Bool, "bridge", "history_sync", "backfill")
 	helper.Copy(up.Bool, "bridge", "history_sync", "double_puppet_backfill")
 	helper.Copy(up.Bool, "bridge", "history_sync", "request_full_sync")
+	helper.Copy(up.Int|up.Null, "bridge", "history_sync", "full_sync_config", "days_limit")
+	helper.Copy(up.Int|up.Null, "bridge", "history_sync", "full_sync_config", "size_mb_limit")
+	helper.Copy(up.Int|up.Null, "bridge", "history_sync", "full_sync_config", "storage_quota_mb")
 	helper.Copy(up.Bool, "bridge", "history_sync", "media_requests", "auto_request_media")
 	helper.Copy(up.Str, "bridge", "history_sync", "media_requests", "request_method")
 	helper.Copy(up.Int, "bridge", "history_sync", "media_requests", "request_local_time")
@@ -89,12 +93,19 @@ func DoUpgrade(helper *up.Helper) {
 	helper.Copy(up.Bool, "bridge", "allow_user_invite")
 	helper.Copy(up.Str, "bridge", "command_prefix")
 	helper.Copy(up.Bool, "bridge", "federate_rooms")
-	helper.Copy(up.Bool, "bridge", "disappearing_messages_in_groups")
 	helper.Copy(up.Bool, "bridge", "disable_bridge_alerts")
 	helper.Copy(up.Bool, "bridge", "crash_on_stream_replaced")
 	helper.Copy(up.Bool, "bridge", "url_previews")
 	helper.Copy(up.Bool, "bridge", "caption_in_message")
-	helper.Copy(up.Int, "bridge", "extev_polls")
+	if intPolls, ok := helper.Get(up.Int, "bridge", "extev_polls"); ok {
+		val := "false"
+		if intPolls != "0" {
+			val = "true"
+		}
+		helper.Set(up.Bool, val, "bridge", "extev_polls")
+	} else {
+		helper.Copy(up.Bool, "bridge", "extev_polls")
+	}
 	helper.Copy(up.Bool, "bridge", "send_whatsapp_edits")
 	helper.Copy(up.Str|up.Null, "bridge", "message_handling_timeout", "error_after")
 	helper.Copy(up.Str|up.Null, "bridge", "message_handling_timeout", "deadline")
@@ -107,6 +118,7 @@ func DoUpgrade(helper *up.Helper) {
 	helper.Copy(up.Bool, "bridge", "encryption", "default")
 	helper.Copy(up.Bool, "bridge", "encryption", "require")
 	helper.Copy(up.Bool, "bridge", "encryption", "appservice")
+	helper.Copy(up.Bool, "bridge", "encryption", "plaintext_mentions")
 	helper.Copy(up.Str, "bridge", "encryption", "verification_levels", "receive")
 	helper.Copy(up.Str, "bridge", "encryption", "verification_levels", "send")
 	helper.Copy(up.Str, "bridge", "encryption", "verification_levels", "share")

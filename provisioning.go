@@ -543,7 +543,7 @@ func jsonResponse(w http.ResponseWriter, status int, response interface{}) {
 func (prov *ProvisioningAPI) Logout(w http.ResponseWriter, r *http.Request) {
 	user := r.Context().Value("user").(*User)
 	if user.Session == nil {
-		jsonResponse(w, http.StatusNotFound, Error{
+		jsonResponse(w, http.StatusOK, Error{
 			Error:   "No tienes sesión iniciada",
 			ErrCode: "not logged in",
 		})
@@ -622,8 +622,11 @@ func (prov *ProvisioningAPI) Login(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if userTimezone := r.URL.Query().Get("tz"); userTimezone != "" {
+		user.log.Debug("Setting timezone to %s", userTimezone)
 		user.Timezone = userTimezone
 		user.Update()
+	} else {
+		user.log.Debug("No timezone provided in request")
 	}
 
 	qrChan, err := user.Login(ctx)

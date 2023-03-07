@@ -1,8 +1,8 @@
 # Homeserver details.
 homeserver:
     # The address that this appservice can use to connect to the homeserver.
-    address: https://example.com
-    # The domain of the homeserver (for MXIDs, etc).
+    address: https://matrix.example.com
+    # The domain of the homeserver (also known as server_name, used for MXIDs, etc).
     domain: example.com
 
     # What software is the homeserver running?
@@ -29,10 +29,11 @@ appservice:
 
     # Database config.
     database:
-        # The database type. "sqlite3" and "postgres" are supported.
+        # The database type. "sqlite3-fk-wal" and "postgres" are supported.
         type: postgres
         # The database URI.
-        #   SQLite: File name is enough. https://github.com/mattn/go-sqlite3#connection-string
+        #   SQLite: A raw file path is supported, but `file:<path>?_txlock=immediate` is recommended.
+        #           https://github.com/mattn/go-sqlite3#connection-string
         #   Postgres: Connection string. For example, postgres://user:password@host/database?sslmode=disable
         #             To connect via Unix socket, use something like postgres:///dbname?host=/var/run/postgresql
         uri: postgres://user:password@host/database?sslmode=disable
@@ -71,6 +72,8 @@ appservice:
 
 # Segment API key to track some events, like provisioning API login and encryption errors.
 segment_key: null
+# Optional user_id to use when sending Segment events. If null, defaults to using mxID.
+segment_user_id: null
 
 # Prometheus config.
 metrics:
@@ -133,6 +136,16 @@ bridge:
         # Should the bridge request a full sync from the phone when logging in?
         # This bumps the size of history syncs from 3 months to 1 year.
         request_full_sync: false
+        # Configuration parameters that are sent to the phone along with the request full sync flag.
+        # By default (when the values are null or 0), the config isn't sent at all.
+        full_sync_config:
+            # Number of days of history to request.
+            # The limit seems to be around 3 years, but using higher values doesn't break.
+            days_limit: null
+            # This is presumably the maximum size of the transferred history sync blob, which may affect what the phone includes in the blob.
+            size_mb_limit: null
+            # This is presumably the local storage quota, which may affect what the phone includes in the history sync blob.
+            storage_quota_mb: null
         # Settings for media requests. If the media expired, then it will not
         # be on the WA servers.
         # Media can always be requested by reacting with the ♻️ (recycle) emoji.
@@ -281,10 +294,6 @@ bridge:
     # Whether or not created rooms should have federation enabled.
     # If false, created portal rooms will never be federated.
     federate_rooms: true
-    # Whether to enable disappearing messages in groups. If enabled, then the expiration time of
-    # the messages will be determined by the first user to read the message, rather than individually.
-    # If the bridge only has a single user, this can be turned on safely.
-    disappearing_messages_in_groups: false
     # Should the bridge never send alerts to the bridge management room?
     # These are mostly things like the user being logged out.
     disable_bridge_alerts: false
@@ -298,9 +307,8 @@ bridge:
     # Send captions in the same message as images. This will send data compatible with both MSC2530 and MSC3552.
     # This is currently not supported in most clients.
     caption_in_message: false
-    # Should polls be sent using MSC3381 event types? This should either be 1 for original polls MSC,
-    # 2 for the updated MSC as of November 2022, or 0 to use legacy m.room.message (which doesn't support voting).
-    extev_polls: 0
+    # Should polls be sent using MSC3381 event types?
+    extev_polls: false
     # Should Matrix edits be bridged to WhatsApp edits?
     # Official WhatsApp clients don't render edits yet, but once they do, the bridge should work with them right away.
     send_whatsapp_edits: false
@@ -346,6 +354,8 @@ bridge:
         # Enable key sharing? If enabled, key requests for rooms where users are in will be fulfilled.
         # You must use a client that supports requesting keys from other users to use this feature.
         allow_key_sharing: false
+        # Should users mentions be in the event wire content to enable the server to send push notifications?
+        plaintext_mentions: false
         # What level of device verification should be required from users?
         #
         # Valid levels:
@@ -421,19 +431,15 @@ bridge:
             m.video: "<b>{{ .Sender.Displayname }}</b> sent a video"
             m.location: "<b>{{ .Sender.Displayname }}</b> sent a location"
 
-# Logging config.
+# Logging config. See https://github.com/tulir/zeroconfig for details.
 logging:
-    # The directory for log files. Will be created if not found.
-    directory: ./logs
-    # Available variables: .Date for the file date and .Index for different log files on the same day.
-    # Set this to null to disable logging to file.
-    file_name_format: "{{.Date}}-{{.Index}}.log"
-    # Date format for file names in the Go time format: https://golang.org/pkg/time/#pkg-constants
-    file_date_format: "2006-01-02"
-    # Log file permissions.
-    file_mode: 0o600
-    # Timestamp format for log entries in the Go time format.
-    timestamp_format: "Jan _2, 2006 15:04:05"
-    # Minimum severity for log messages printed to stdout/stderr. This doesn't affect the log file.
-    # Options: debug, info, warn, error, fatal
-    print_level: debug
+    min_level: debug
+    writers:
+    - type: stdout
+      format: pretty-colored
+    - type: file
+      format: json
+      filename: ./logs/mautrix-whatsapp.log
+      max_size: 100
+      max_backups: 10
+      compress: true

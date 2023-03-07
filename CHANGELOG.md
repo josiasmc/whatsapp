@@ -1,3 +1,42 @@
+# unreleased
+
+* Bumped minimum Go version to 1.19.
+* Switched to zerolog for logging.
+  * The basic log config will be migrated automatically, but you may want to
+    tweak it as the options are different.
+
+# v0.8.2 (2023-02-16)
+
+* Updated portal room power levels to always allow poll votes.
+* Fixed disappearing message timing being implemented incorrectly.
+* Fixed server rejecting messages not being handled as an error.
+* Fixed sent files not being downloadable on latest WhatsApp beta versions.
+* Fixed `sync space` command not syncing DMs into the space properly.
+* Added workaround for broken clients like Element iOS that can't render normal
+  image messages correctly.
+
+# v0.8.1 (2023-01-16)
+
+* Added support for sending polls from Matrix to WhatsApp.
+* Added config option for requesting more history from phone during login.
+* Added support for WhatsApp chat with yourself.
+* Fixed deleting portals not working correctly in some cases.
+
+# v0.8.0 (2022-12-16)
+
+* Added support for bridging polls from WhatsApp and votes in both directions.
+  * Votes are only bridged if MSC3381 polls are enabled
+    (`extev_polls` in the config).
+* Added support for bridging WhatsApp communities as spaces.
+* Updated backfill logic to mark rooms as read if the only message is a notice
+  about the disappearing message timer.
+* Updated Docker image to Alpine 3.17.
+* Fixed backfills starting at the wrong time and sending smaller batches than
+  intended in some cases.
+* Switched SQLite config from `sqlite3` to `sqlite3-fk-wal` to enforce foreign
+  keys and WAL mode. Additionally, adding `_txlock=immediate` to the DB path is
+  recommended, but not required.
+
 # v0.7.2 (2022-11-16)
 
 * Added option to handle all transactions asynchronously.

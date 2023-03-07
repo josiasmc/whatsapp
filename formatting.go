@@ -1,5 +1,5 @@
 // mautrix-whatsapp - A Matrix-WhatsApp puppeting bridge.
-// Copyright (C) 2021 Tulir Asokan
+// Copyright (C) 2023 Tulir Asokan
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as published by
@@ -35,7 +35,8 @@ var strikethroughRegex = regexp.MustCompile("([\\s>_*]|^)~(.+?)~([^a-zA-Z\\d]|$)
 var codeBlockRegex = regexp.MustCompile("```(?:.|\n)+?```")
 var inlineURLRegex = regexp.MustCompile(`\[(.+?)]\((.+?)\)`)
 
-const mentionedJIDsContextKey = "net.maunium.whatsapp.mentioned_jids"
+const mentionedJIDsContextKey = "fi.mau.whatsapp.mentioned_jids"
+const disableMentionsContextKey = "fi.mau.whatsapp.no_mentions"
 
 type Formatter struct {
 	bridge *WABridge
@@ -55,19 +56,20 @@ func NewFormatter(bridge *WABridge) *Formatter {
 			Newline:      "\n",
 
 			PillConverter: func(displayname, mxid, eventID string, ctx format.Context) string {
-				if mxid[0] == '@' {
+				_, disableMentions := ctx.ReturnData[disableMentionsContextKey]
+				if mxid[0] == '@' && !disableMentions {
 					puppet := bridge.GetPuppetByMXID(id.UserID(mxid))
 					if puppet != nil {
-						jids, ok := ctx[mentionedJIDsContextKey].([]string)
+						jids, ok := ctx.ReturnData[mentionedJIDsContextKey].([]string)
 						if !ok {
-							ctx[mentionedJIDsContextKey] = []string{puppet.JID.String()}
+							ctx.ReturnData[mentionedJIDsContextKey] = []string{puppet.JID.String()}
 						} else {
-							ctx[mentionedJIDsContextKey] = append(jids, puppet.JID.String())
+							ctx.ReturnData[mentionedJIDsContextKey] = append(jids, puppet.JID.String())
 						}
 						return "@" + puppet.JID.User
 					}
 				}
-				return mxid
+				return displayname
 			},
 			BoldConverter:           func(text string, _ format.Context) string { return fmt.Sprintf("*%s*", text) },
 			ItalicConverter:         func(text string, _ format.Context) string { return fmt.Sprintf("_%s_", text) },
@@ -123,6 +125,8 @@ func (formatter *Formatter) ParseWhatsApp(roomID id.RoomID, content *event.Messa
 			return fmt.Sprintf(`<a href="%s">%s</a>`, groups[2], groups[1])
 		})
 	}
+	alreadyMentioned := make(map[id.UserID]struct{})
+	content.Mentions = &event.Mentions{}
 	for _, rawJID := range mentionedJIDs {
 		jid, err := types.ParseJID(rawJID)
 		if err != nil {
@@ -134,7 +138,12 @@ func (formatter *Formatter) ParseWhatsApp(roomID id.RoomID, content *event.Messa
 		number := "@" + jid.User
 		output = strings.ReplaceAll(output, number, fmt.Sprintf(`<a href="https://matrix.to/#/%s">%s</a>`, mxid, displayname))
 		content.Body = strings.ReplaceAll(content.Body, number, displayname)
+		if _, ok := alreadyMentioned[mxid]; !ok {
+			alreadyMentioned[mxid] = struct{}{}
+			content.Mentions.UserIDs = append(content.Mentions.UserIDs, mxid)
+		}
 	}
+	content.UnstableMentions = content.Mentions
 	if output != content.Body || forceHTML {
 		output = strings.ReplaceAll(output, "\n", "<br/>")
 		content.FormattedBody = output
@@ -146,8 +155,14 @@ func (formatter *Formatter) ParseWhatsApp(roomID id.RoomID, content *event.Messa
 }
 
 func (formatter *Formatter) ParseMatrix(html string) (string, []string) {
-	ctx := make(format.Context)
+	ctx := format.NewContext()
 	result := formatter.matrixHTMLParser.Parse(html, ctx)
-	mentionedJIDs, _ := ctx[mentionedJIDsContextKey].([]string)
+	mentionedJIDs, _ := ctx.ReturnData[mentionedJIDsContextKey].([]string)
 	return result, mentionedJIDs
+}
+
+func (formatter *Formatter) ParseMatrixWithoutMentions(html string) string {
+	ctx := format.NewContext()
+	ctx.ReturnData[disableMentionsContextKey] = true
+	return formatter.matrixHTMLParser.Parse(html, ctx)
 }
