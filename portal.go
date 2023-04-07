@@ -120,6 +120,16 @@ func (br *WABridge) GetPortalByJID(key database.PortalKey) *Portal {
 	return portal
 }
 
+func (br *WABridge) GetExistingPortalByJID(key database.PortalKey) *Portal {
+	br.portalsLock.Lock()
+	defer br.portalsLock.Unlock()
+	portal, ok := br.portalsByJID[key]
+	if !ok {
+		return br.loadDBPortal(br.DB.Portal.GetByJID(key), nil)
+	}
+	return portal
+}
+
 func (br *WABridge) GetAllPortals() []*Portal {
 	return br.dbPortalsToPortals(br.DB.Portal.GetAll())
 }
@@ -1866,15 +1876,35 @@ func (portal *Portal) SetReply(content *event.MessageEventContent, replyTo *Repl
 	if replyTo == nil {
 		return false
 	}
-	message := portal.bridge.DB.Message.GetByJID(portal.Key, replyTo.MessageID)
+	key := portal.Key
+	targetPortal := portal
+	defer func() {
+		if content.RelatesTo != nil && content.RelatesTo.InReplyTo != nil && targetPortal != portal {
+			content.RelatesTo.InReplyTo.UnstableRoomID = targetPortal.MXID
+		}
+	}()
+	if portal.bridge.Config.Bridge.CrossRoomReplies && !replyTo.Chat.IsEmpty() && replyTo.Chat != key.JID {
+		if replyTo.Chat.Server == types.GroupServer {
+			key = database.NewPortalKey(replyTo.Chat, types.EmptyJID)
+		} else if replyTo.Chat == types.BroadcastServerJID {
+			key = database.NewPortalKey(replyTo.Chat, key.Receiver)
+		}
+		if key != portal.Key {
+			targetPortal = portal.bridge.GetExistingPortalByJID(key)
+			if targetPortal == nil {
+				return false
+			}
+		}
+	}
+	message := portal.bridge.DB.Message.GetByJID(key, replyTo.MessageID)
 	if message == nil || message.IsFakeMXID() {
 		if isBackfill && portal.bridge.Config.Homeserver.Software == bridgeconfig.SoftwareHungry {
-			content.RelatesTo = (&event.RelatesTo{}).SetReplyTo(portal.deterministicEventID(replyTo.Sender, replyTo.MessageID, ""))
+			content.RelatesTo = (&event.RelatesTo{}).SetReplyTo(targetPortal.deterministicEventID(replyTo.Sender, replyTo.MessageID, ""))
 			return true
 		}
 		return false
 	}
-	evt, err := portal.MainIntent().GetEvent(portal.MXID, message.MXID)
+	evt, err := targetPortal.MainIntent().GetEvent(targetPortal.MXID, message.MXID)
 	if err != nil {
 		portal.log.Warnln("Failed to get reply target:", err)
 		content.RelatesTo = (&event.RelatesTo{}).SetReplyTo(message.MXID)
@@ -2017,12 +2047,14 @@ func (portal *Portal) sendMessage(intent *appservice.IntentAPI, eventType event.
 
 type ReplyInfo struct {
 	MessageID types.MessageID
+	Chat      types.JID
 	Sender    types.JID
 }
 
 type Replyable interface {
 	GetStanzaId() string
 	GetParticipant() string
+	GetRemoteJid() string
 }
 
 func GetReply(replyable Replyable) *ReplyInfo {
@@ -2033,8 +2065,10 @@ func GetReply(replyable Replyable) *ReplyInfo {
 	if err != nil {
 		return nil
 	}
+	chat, _ := types.ParseJID(replyable.GetRemoteJid())
 	return &ReplyInfo{
 		MessageID: types.MessageID(replyable.GetStanzaId()),
+		Chat:      chat,
 		Sender:    sender,
 	}
 }
@@ -2830,6 +2864,7 @@ func (portal *Portal) convertMediaMessageContent(intent *appservice.IntentAPI, m
 			"fi.mau.autoplay":      true,
 			"fi.mau.hide_controls": true,
 			"fi.mau.no_audio":      true,
+			"fi.mau.gif":           true,
 		}
 	}
 
@@ -3739,6 +3774,21 @@ type extraConvertMeta struct {
 	EditRootMsg *database.Message
 }
 
+func getEditError(rootMsg *database.Message, editer *User) error {
+	switch {
+	case rootMsg == nil:
+		return errEditUnknownTarget
+	case rootMsg.Type != database.MsgNormal || rootMsg.IsFakeJID():
+		return errEditUnknownTargetType
+	case rootMsg.Sender.User != editer.JID.User:
+		return errEditDifferentSender
+	case time.Since(rootMsg.Timestamp) > whatsmeow.EditWindow:
+		return errEditTooOld
+	default:
+		return nil
+	}
+}
+
 func (portal *Portal) convertMatrixMessage(ctx context.Context, sender *User, evt *event.Event) (*waProto.Message, *User, *extraConvertMeta, error) {
 	if evt.Type == TypeMSC3381PollResponse || evt.Type == TypeMSC3381V2PollResponse {
 		return portal.convertMatrixPollVote(ctx, sender, evt)
@@ -3753,8 +3803,8 @@ func (portal *Portal) convertMatrixMessage(ctx context.Context, sender *User, ev
 	var editRootMsg *database.Message
 	if editEventID := content.RelatesTo.GetReplaceID(); editEventID != "" && portal.bridge.Config.Bridge.SendWhatsAppEdits {
 		editRootMsg = portal.bridge.DB.Message.GetByMXID(editEventID)
-		if editRootMsg == nil || editRootMsg.Type != database.MsgNormal || editRootMsg.IsFakeJID() || editRootMsg.Sender.User != sender.JID.User {
-			return nil, sender, extraMeta, fmt.Errorf("edit rejected") // TODO more specific error message
+		if editErr := getEditError(editRootMsg, sender); editErr != nil {
+			return nil, sender, extraMeta, editErr
 		}
 		extraMeta.EditRootMsg = editRootMsg
 		if content.NewContent != nil {
