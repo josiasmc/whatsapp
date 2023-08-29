@@ -27,19 +27,18 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"go.mau.fi/util/configupgrade"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 
-	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridge"
 	"maunium.net/go/mautrix/bridge/commands"
 	"maunium.net/go/mautrix/bridge/status"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
-	"maunium.net/go/mautrix/util/configupgrade"
 
 	"maunium.net/go/mautrix-whatsapp/config"
 	"maunium.net/go/mautrix-whatsapp/database"
@@ -151,6 +150,7 @@ func (br *WABridge) Start() {
 		br.Provisioning.Init()
 	}
 	go br.CheckWhatsAppUpdate()
+	br.WaitWebsocketConnected()
 	go br.StartUsers()
 	if br.Config.Metrics.Enabled {
 		go br.Metrics.Start()
@@ -247,20 +247,6 @@ func (br *WABridge) GetConfigPtr() interface{} {
 	return br.Config
 }
 
-const unstableFeatureBatchSending = "org.matrix.msc2716"
-
-func (br *WABridge) CheckFeatures(versions *mautrix.RespVersions) (string, bool) {
-	if br.Config.Bridge.HistorySync.Backfill {
-		supported, known := versions.UnstableFeatures[unstableFeatureBatchSending]
-		if !known {
-			return "Backfilling is enabled in bridge config, but homeserver does not support MSC2716 batch sending", false
-		} else if !supported {
-			return "Backfilling is enabled in bridge config, but MSC2716 batch sending is not enabled on homeserver", false
-		}
-	}
-	return "", true
-}
-
 func main() {
 	br := &WABridge{
 		usersByMXID:         make(map[id.UserID]*User),
@@ -273,11 +259,13 @@ func main() {
 		puppetsByCustomMXID: make(map[id.UserID]*Puppet),
 	}
 	br.Bridge = bridge.Bridge{
-		Name:         "mautrix-whatsapp",
-		URL:          "https://github.com/mautrix/whatsapp",
-		Description:  "A Matrix-WhatsApp puppeting bridge.",
-		Version:      "0.8.3",
-		ProtocolName: "WhatsApp",
+		Name:              "mautrix-whatsapp",
+		URL:               "https://github.com/mautrix/whatsapp",
+		Description:       "A Matrix-WhatsApp puppeting bridge.",
+		Version:           "0.10.0",
+		ProtocolName:      "WhatsApp",
+		BeeperServiceName: "whatsapp",
+		BeeperNetworkName: "whatsapp",
 
 		CryptoPickleKey: "maunium.net/go/mautrix-whatsapp",
 

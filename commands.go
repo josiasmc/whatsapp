@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"html"
 	"math"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -41,8 +42,6 @@ import (
 	"maunium.net/go/mautrix/bridge/status"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
-
-	"maunium.net/go/mautrix-whatsapp/database"
 )
 
 type WrappedCommandEvent struct {
@@ -71,7 +70,6 @@ func (br *WABridge) RegisterCommands() {
 		cmdPing,
 		cmdDeletePortal,
 		cmdDeleteAllPortals,
-		cmdBackfill,
 		cmdList,
 		cmdSearch,
 		cmdOpen,
@@ -382,8 +380,11 @@ func fnCreate(ce *WrappedCommandEvent) {
 	}
 	// TODO check m.space.parent to create rooms directly in communities
 
-	ce.Log.Infofln("Creando grupo para %s con el nombre %s y los participantes %+v", ce.RoomID, roomNameEvent.Name, participants)
+	messageID := ce.User.Client.GenerateMessageID()
+	ce.Log.Infofln("Creando grupo para %s con el nombre %s y los participantes %+v (crear llave: %s)", ce.RoomID, roomNameEvent.Name, participants, messageID)
+	ce.User.createKeyDedup = messageID
 	resp, err := ce.User.Client.CreateGroup(whatsmeow.ReqCreateGroup{
+		CreateKey:    messageID,
 		Name:         roomNameEvent.Name,
 		Participants: participants,
 		GroupParent: types.GroupParent{
@@ -420,6 +421,7 @@ func fnCreate(ce *WrappedCommandEvent) {
 
 	portal.Update(nil)
 	portal.UpdateBridgeInfo()
+	ce.User.createKeyDedup = ""
 
 	ce.Reply("El grupo de WhatsApp se creó exitosamente %s", portal.Key.JID)
 }
@@ -430,8 +432,11 @@ var cmdLogin = &commands.FullHandler{
 	Help: commands.HelpMeta{
 		Section:     commands.HelpSectionAuth,
 		Description: "Vincular el puente a su cuenta de WhatsApp como un cliente web.",
+		Args:        "[_número de teléfono_]",
 	},
 }
+
+var looksLikeAPhoneRegex = regexp.MustCompile(`^\+[0-9]+$`)
 
 func fnLogin(ce *WrappedCommandEvent) {
 	if ce.User.Session != nil {
@@ -443,11 +448,31 @@ func fnLogin(ce *WrappedCommandEvent) {
 		return
 	}
 
+	var phoneNumber string
+	if len(ce.Args) > 0 {
+		phoneNumber = strings.TrimSpace(strings.Join(ce.Args, " "))
+		if !looksLikeAPhoneRegex.MatchString(phoneNumber) {
+			ce.Reply("When specifying a phone number, it must be provided in international format without spaces or other extra characters")
+			return
+		}
+	}
+
 	qrChan, err := ce.User.Login(context.Background())
 	if err != nil {
-		ce.User.log.Errorf("Failed to log in:", err)
+		ce.ZLog.Err(err).Msg("Failed to start login")
 		ce.Reply("No se pudo iniciar sesión: %v", err)
 		return
+	}
+
+	if phoneNumber != "" {
+		pairingCode, err := ce.User.Client.PairPhone(phoneNumber, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
+		if err != nil {
+			ce.ZLog.Err(err).Msg("Failed to start phone code login")
+			ce.Reply("Failed to start phone code login: %v", err)
+			go ce.User.DeleteConnection()
+			return
+		}
+		ce.Reply("Scan the code below or enter the following code on your phone to log in: **%s**", pairingCode)
 	}
 
 	var qrEventID id.EventID
@@ -457,7 +482,7 @@ func fnLogin(ce *WrappedCommandEvent) {
 			jid := ce.User.Client.Store.ID
 			ce.Reply("Sesión iniciada exitosamente como +%s (dispositivo #%d)", jid.User, jid.Device)
 		case whatsmeow.QRChannelTimeout.Event:
-			ce.Reply("El código QR expiró. Por favor vuelva a comenzar el inicio de sesión.")
+			ce.Reply("El inicio de sesión expiró. Por favor vuelva a comenzar el inicio de sesión.")
 		case whatsmeow.QRChannelErrUnexpectedEvent.Event:
 			ce.Reply("No se pudo iniciar sesión: un evento inesperado de conexión del servidor")
 		case whatsmeow.QRChannelClientOutdated.Event:
@@ -470,7 +495,9 @@ func fnLogin(ce *WrappedCommandEvent) {
 			qrEventID = ce.User.sendQR(ce, item.Code, qrEventID)
 		}
 	}
-	_, _ = ce.Bot.RedactEvent(ce.RoomID, qrEventID)
+	if qrEventID != "" {
+		_, _ = ce.Bot.RedactEvent(ce.RoomID, qrEventID)
+	}
 }
 
 func (user *User) sendQR(ce *WrappedCommandEvent, code string, prevEvent id.EventID) id.EventID {
@@ -532,12 +559,7 @@ func fnLogout(ce *WrappedCommandEvent) {
 		return
 	}
 	puppet := ce.Bridge.GetPuppetByJID(ce.User.JID)
-	if puppet.CustomMXID != "" {
-		err := puppet.SwitchCustomMXID("", "")
-		if err != nil {
-			ce.User.log.Warnln("Failed to logout-matrix while logging out of WhatsApp:", err)
-		}
-	}
+	puppet.ClearCustomMXID()
 	err := ce.User.Client.Logout()
 	if err != nil {
 		ce.User.log.Warnln("Error while logging out:", err)
@@ -781,46 +803,6 @@ func fnDeleteAllPortals(ce *WrappedCommandEvent) {
 		}
 		ce.Reply("Limpiando en el fondo las salas de los portales completado.")
 	}()
-}
-
-var cmdBackfill = &commands.FullHandler{
-	Func: wrapCommand(fnBackfill),
-	Name: "backfill",
-	Help: commands.HelpMeta{
-		Section:     HelpSectionPortalManagement,
-		Description: "Backfill all messages the portal.",
-		Args:        "[_batch size_] [_batch delay_]",
-	},
-	RequiresPortal: true,
-}
-
-func fnBackfill(ce *WrappedCommandEvent) {
-	if !ce.Bridge.Config.Bridge.HistorySync.Backfill {
-		ce.Reply("Backfill is not enabled for this bridge.")
-		return
-	}
-	batchSize := 100
-	batchDelay := 5
-	if len(ce.Args) >= 1 {
-		var err error
-		batchSize, err = strconv.Atoi(ce.Args[0])
-		if err != nil || batchSize < 1 {
-			ce.Reply("\"%s\" isn't a valid batch size", ce.Args[0])
-			return
-		}
-	}
-	if len(ce.Args) >= 2 {
-		var err error
-		batchDelay, err = strconv.Atoi(ce.Args[0])
-		if err != nil || batchSize < 0 {
-			ce.Reply("\"%s\" isn't a valid batch delay", ce.Args[1])
-			return
-		}
-	}
-	backfillMessages := ce.Portal.bridge.DB.Backfill.NewWithValues(ce.User.MXID, database.BackfillImmediate, 0, &ce.Portal.Key, nil, batchSize, -1, batchDelay)
-	backfillMessages.Insert()
-
-	ce.User.BackfillQueue.ReCheck()
 }
 
 func matchesQuery(str string, query string) bool {

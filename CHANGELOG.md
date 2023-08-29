@@ -1,3 +1,63 @@
+# unreleased
+
+* Added support for double puppeting with arbitrary `as_token`s.
+  See [docs](https://docs.mau.fi/bridges/general/double-puppeting.html#appservice-method-new) for more info.
+* Fixed logging in with 8-letter code.
+* Fixed syncing community announcement groups.
+* Changed "Incoming call" message to explicitly say you have to open WhatsApp
+  on your phone to answer.
+
+# v0.10.0 (2023-08-16)
+
+* Bumped minimum Go version to 1.20.
+* Added automatic re-requesting of undecryptable WhatsApp messages from primary
+  device.
+* Added support for round video messages.
+* Added support for logging in by entering a 8-letter code on the phone instead
+  of scanning a QR code.
+  * Note: due to a server-side change, code login may only work when `os_name`
+    and `browser_name` in the config are set in a specific way. A future release
+    will automatically change the values to always work with code login.
+
+# v0.9.0 (2023-07-16)
+
+* Removed MSC2716 support.
+* Added legacy backfill support.
+* Updated Docker image to Alpine 3.18.
+* Changed all ogg audio messages from WhatsApp to be bridged as voice messages
+  to Matrix, as WhatsApp removes the voice message flag when forwarding for
+  some reason.
+* Added Prometheus metric for WhatsApp connection failures
+  (thanks to [@Half-Shot] in [#620]).
+
+[#620]: https://github.com/mautrix/whatsapp/pull/620
+
+# v0.8.6 (2023-06-16)
+
+* Implemented intentional mentions for outgoing messages.
+* Added support for appservice websockets.
+* Added additional index on message table to make bridging outgoing read
+  receipts and messages faster in chats with lots of messages.
+* Fixed handling WhatsApp poll messages that only allow one choice.
+* Fixed bridging new groups immediately when they're created.
+
+# v0.8.5 (2023-05-16)
+
+* Added option to disable reply fallbacks entirely.
+* Added provisioning API for joining groups with invite links.
+* Added error reply to encrypted messages if the bridge isn't configured to do
+  encryption.
+* Changed audio messages with captions to be sent as documents to WhatsApp
+  (otherwise the caption would be lost).
+
+# v0.8.4 (2023-04-16)
+
+* Enabled sending edits to WhatsApp by default.
+* Added options to automatically ratchet/delete megolm sessions to minimize
+  access to old messages.
+* Added automatic media re-requesting when download fails with 403 error.
+* Added option to not set room name/avatar even in encrypted rooms.
+
 # v0.8.3 (2023-03-16)
 
 * Bumped minimum Go version to 1.19.

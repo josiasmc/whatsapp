@@ -32,7 +32,9 @@ import (
 	"sync"
 	"time"
 
-	log "maunium.net/go/maulogger/v2"
+	"github.com/rs/zerolog"
+	"maunium.net/go/maulogger/v2"
+	"maunium.net/go/maulogger/v2/maulogadapt"
 
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/appservice"
@@ -61,7 +63,9 @@ type User struct {
 	Session *store.Device
 
 	bridge *WABridge
-	log    log.Logger
+	zlog   zerolog.Logger
+	// Deprecated
+	log maulogger.Logger
 
 	Admin            bool
 	Whitelisted      bool
@@ -90,6 +94,10 @@ type User struct {
 	resyncQueue     map[types.JID]resyncQueueItem
 	resyncQueueLock sync.Mutex
 	nextResync      time.Time
+
+	createKeyDedup       string
+	skipGroupCreateDelay types.JID
+	groupJoinLock        sync.Mutex
 }
 
 type resyncQueueItem struct {
@@ -224,13 +232,14 @@ func (br *WABridge) NewUser(dbUser *database.User) *User {
 	user := &User{
 		User:   dbUser,
 		bridge: br,
-		log:    br.Log.Sub("User").Sub(string(dbUser.MXID)),
+		zlog:   br.ZLog.With().Str("user_id", dbUser.MXID.String()).Logger(),
 
 		historySyncs: make(chan *events.HistorySync, 32),
 		lastPresence: types.PresenceUnavailable,
 
 		resyncQueue: make(map[types.JID]resyncQueueItem),
 	}
+	user.log = maulogadapt.ZeroAsMau(&user.zlog)
 
 	user.PermissionLevel = user.bridge.Config.Bridge.Permissions.Get(user.MXID)
 	user.RelayWhitelisted = user.PermissionLevel >= bridgeconfig.PermissionLevelRelay
@@ -467,7 +476,7 @@ func (user *User) SetManagementRoom(roomID id.RoomID) {
 	user.Update()
 }
 
-type waLogger struct{ l log.Logger }
+type waLogger struct{ l maulogger.Logger }
 
 func (w *waLogger) Debugf(msg string, args ...interface{}) { w.l.Debugfln(msg, args...) }
 func (w *waLogger) Infof(msg string, args ...interface{})  { w.l.Infofln(msg, args...) }
@@ -487,6 +496,7 @@ func (user *User) createClient(sess *store.Device) {
 	user.Client = whatsmeow.NewClient(sess, &waLogger{user.log.Sub("Client")})
 	user.Client.AddEventHandler(user.HandleEvent)
 	user.Client.SetForceActiveDeliveryReceipts(user.bridge.Config.Bridge.ForceActiveDeliveryReceipts)
+	user.Client.AutomaticMessageRerequestFromPhone = true
 	user.Client.GetMessageForRetry = func(requester, to types.JID, id types.MessageID) *waProto.Message {
 		Segment.Track(user.MXID, "WhatsApp incoming retry (message not found)", map[string]interface{}{
 			"requester": user.obfuscateJID(requester),
@@ -602,30 +612,6 @@ func (user *User) IsLoggedIn() bool {
 	return user.IsConnected() && user.Client.IsLoggedIn()
 }
 
-func (user *User) tryAutomaticDoublePuppeting() {
-	if !user.bridge.Config.CanAutoDoublePuppet(user.MXID) {
-		return
-	}
-	user.log.Debugln("Checking if double puppeting needs to be enabled")
-	puppet := user.bridge.GetPuppetByJID(user.JID)
-	if len(puppet.CustomMXID) > 0 {
-		user.log.Debugln("User already has double-puppeting enabled")
-		// Custom puppet already enabled
-		return
-	}
-	accessToken, err := puppet.loginWithSharedSecret(user.MXID)
-	if err != nil {
-		user.log.Warnln("Failed to login with shared secret:", err)
-		return
-	}
-	err = puppet.SwitchCustomMXID(accessToken, user.MXID)
-	if err != nil {
-		puppet.log.Warnln("Failed to switch to auto-logined custom puppet:", err)
-		return
-	}
-	user.log.Infoln("Successfully automatically enabled custom puppet")
-}
-
 func (user *User) sendMarkdownBridgeAlert(formatString string, args ...interface{}) {
 	if user.bridge.Config.Bridge.DisableBridgeAlerts {
 		return
@@ -645,9 +631,9 @@ func (user *User) handleCallStart(sender types.JID, id, callType string, ts time
 		return
 	}
 	portal := user.GetPortalByJID(sender)
-	text := "Llamada entrante"
+	text := "Llamada entrante. Utilice la app de WhatsApp para contestar."
 	if callType != "" {
-		text = fmt.Sprintf("Incoming %s call", callType)
+		text = fmt.Sprintf("Incoming %s call. Use the WhatsApp app to answer.", callType)
 	}
 	portal.messages <- PortalMessage{
 		fake: &fakeMessage{
@@ -667,7 +653,7 @@ const PhoneMinPingInterval = 24 * time.Hour
 
 func (user *User) sendHackyPhonePing() {
 	user.PhoneLastPinged = time.Now()
-	msgID := whatsmeow.GenerateMessageID()
+	msgID := user.Client.GenerateMessageID()
 	keyIDs := make([]*waProto.AppStateSyncKeyId, 0, 1)
 	lastKeyID, err := user.GetLastAppStateKeyID()
 	if lastKeyID != nil {
@@ -801,6 +787,11 @@ func (user *User) HandleEvent(event interface{}) {
 		if err != nil {
 			user.log.Warnln("Failed to send presence after push name update:", err)
 		}
+		_, _, err = user.Client.Store.Contacts.PutPushName(user.JID.ToNonAD(), v.Action.GetName())
+		if err != nil {
+			user.log.Warnln("Failed to update push name in store:", err)
+		}
+		go user.syncPuppet(user.JID.ToNonAD(), "push name setting")
 	case *events.PairSuccess:
 		user.PhoneLastSeen = time.Now()
 		user.Session = user.Client.Store
@@ -828,15 +819,18 @@ func (user *User) HandleEvent(event interface{}) {
 			user.sendMarkdownBridgeAlert("The bridge was started in another location. Use `reconnect` to reconnect this one.")
 		}
 	case *events.ConnectFailure:
-		user.BridgeState.Send(status.BridgeState{StateEvent: status.StateUnknownError, Message: fmt.Sprintf("Unknown connection failure: %s", v.Reason)})
+		user.BridgeState.Send(status.BridgeState{StateEvent: status.StateUnknownError, Message: fmt.Sprintf("Unknown connection failure: %s (%s)", v.Reason, v.Message)})
 		user.bridge.Metrics.TrackConnectionState(user.JID, false)
+		user.bridge.Metrics.TrackConnectionFailure(fmt.Sprintf("status-%d", v.Reason))
 	case *events.ClientOutdated:
 		user.log.Errorfln("Got a client outdated connect failure. The bridge is likely out of date, please update immediately.")
 		user.BridgeState.Send(status.BridgeState{StateEvent: status.StateUnknownError, Message: "Connect failure: 405 client outdated"})
 		user.bridge.Metrics.TrackConnectionState(user.JID, false)
+		user.bridge.Metrics.TrackConnectionFailure("client-outdated")
 	case *events.TemporaryBan:
 		user.BridgeState.Send(status.BridgeState{StateEvent: status.StateBadCredentials, Message: v.String()})
 		user.bridge.Metrics.TrackConnectionState(user.JID, false)
+		user.bridge.Metrics.TrackConnectionFailure("temporary-ban")
 	case *events.Disconnected:
 		// Don't send the normal transient disconnect state if we're already in a different transient disconnect state.
 		// TODO remove this if/when the phone offline state is moved to a sub-state of CONNECTED
@@ -878,6 +872,9 @@ func (user *User) HandleEvent(event interface{}) {
 		user.handleCallStart(v.CallCreator, v.CallID, v.Type, v.Timestamp)
 	case *events.IdentityChange:
 		puppet := user.bridge.GetPuppetByJID(v.JID)
+		if puppet == nil {
+			return
+		}
 		portal := user.GetPortalByJID(v.JID)
 		if len(portal.MXID) > 0 && user.bridge.Config.Bridge.IdentityChangeNotices {
 			text := fmt.Sprintf("Su código de seguridad con %s ha cambiado.", puppet.Displayname)
@@ -1179,6 +1176,10 @@ func (user *User) ResyncGroups(createPortals bool) error {
 	if err != nil {
 		return fmt.Errorf("failed to get group list from server: %w", err)
 	}
+	user.groupListCacheLock.Lock()
+	user.groupListCache = groups
+	user.groupListCacheTime = time.Now()
+	user.groupListCacheLock.Unlock()
 	for _, group := range groups {
 		portal := user.GetPortalByJID(group.JID)
 		if len(portal.MXID) == 0 {
@@ -1199,6 +1200,9 @@ const WATypingTimeout = 15 * time.Second
 
 func (user *User) handleChatPresence(presence *events.ChatPresence) {
 	puppet := user.bridge.GetPuppetByJID(presence.Sender)
+	if puppet == nil {
+		return
+	}
 	portal := user.GetPortalByJID(presence.Chat)
 	if puppet == nil || portal == nil || len(portal.MXID) == 0 {
 		return
@@ -1288,7 +1292,15 @@ func (user *User) markUnread(portal *Portal, unread bool) {
 
 func (user *User) handleGroupCreate(evt *events.JoinedGroup) {
 	portal := user.GetPortalByJID(evt.JID)
+	if evt.CreateKey == "" && len(portal.MXID) == 0 && portal.Key.JID != user.skipGroupCreateDelay {
+		user.log.Debugfln("Delaying handling group create with empty key to avoid race conditions")
+		time.Sleep(5 * time.Second)
+	}
 	if len(portal.MXID) == 0 {
+		if user.createKeyDedup != "" && evt.CreateKey == user.createKeyDedup {
+			user.log.Debugfln("Ignoring group create event with key %s", evt.CreateKey)
+			return
+		}
 		err := portal.CreateMatrixRoom(user, &evt.GroupInfo, true, true)
 		if err != nil {
 			user.log.Errorln("Failed to create Matrix room after join notification: %v", err)
@@ -1300,43 +1312,67 @@ func (user *User) handleGroupCreate(evt *events.JoinedGroup) {
 
 func (user *User) handleGroupUpdate(evt *events.GroupInfo) {
 	portal := user.GetPortalByJID(evt.JID)
+	with := user.zlog.With().
+		Str("chat_jid", evt.JID.String()).
+		Interface("group_event", evt)
+	if portal != nil {
+		with = with.Str("portal_mxid", portal.MXID.String())
+	}
+	log := with.Logger()
 	if portal == nil || len(portal.MXID) == 0 {
-		user.log.Debugfln("Ignoring group info update in chat with no portal: %+v", evt)
+		log.Debug().Msg("Ignoring group info update in chat with no portal")
+		return
+	}
+	if evt.Sender != nil && evt.Sender.Server == types.HiddenUserServer {
+		log.Debug().Str("sender", evt.Sender.String()).Msg("Ignoring group info update from @lid user")
 		return
 	}
 	switch {
 	case evt.Announce != nil:
+		log.Debug().Msg("Group announcement mode (message send permission) changed")
 		portal.RestrictMessageSending(evt.Announce.IsAnnounce)
 	case evt.Locked != nil:
+		log.Debug().Msg("Group locked mode (metadata change permission) changed")
 		portal.RestrictMetadataChanges(evt.Locked.IsLocked)
 	case evt.Name != nil:
+		log.Debug().Msg("Group name changed")
 		portal.UpdateName(evt.Name.Name, evt.Name.NameSetBy, true)
 	case evt.Topic != nil:
+		log.Debug().Msg("Group topic changed")
 		portal.UpdateTopic(evt.Topic.Topic, evt.Topic.TopicSetBy, true)
 	case evt.Leave != nil:
+		log.Debug().Msg("Someone left the group")
 		if evt.Sender != nil && !evt.Sender.IsEmpty() {
 			portal.HandleWhatsAppKick(user, *evt.Sender, evt.Leave)
 		}
 	case evt.Join != nil:
+		log.Debug().Msg("Someone joined the group")
 		portal.HandleWhatsAppInvite(user, evt.Sender, evt.Join)
 	case evt.Promote != nil:
+		log.Debug().Msg("Someone was promoted to admin")
 		portal.ChangeAdminStatus(evt.Promote, true)
 	case evt.Demote != nil:
+		log.Debug().Msg("Someone was demoted from admin")
 		portal.ChangeAdminStatus(evt.Demote, false)
 	case evt.Ephemeral != nil:
+		log.Debug().Msg("Group ephemeral mode (disappearing message timer) changed")
 		portal.UpdateGroupDisappearingMessages(evt.Sender, evt.Timestamp, evt.Ephemeral.DisappearingTimer)
 	case evt.Link != nil:
+		log.Debug().Msg("Group parent changed")
 		if evt.Link.Type == types.GroupLinkChangeTypeParent {
 			portal.UpdateParentGroup(user, evt.Link.Group.JID, true)
 		}
 	case evt.Unlink != nil:
+		log.Debug().Msg("Group parent removed")
 		if evt.Unlink.Type == types.GroupLinkChangeTypeParent && portal.ParentGroup == evt.Unlink.Group.JID {
 			portal.UpdateParentGroup(user, types.EmptyJID, true)
 		}
 	case evt.Delete != nil:
-		portal.log.Infoln("Got group delete event from WhatsApp, deleting portal")
+		log.Debug().Msg("Group deleted")
 		portal.Delete()
 		portal.Cleanup(false)
+	default:
+		log.Warn().Msg("Unhandled group info update")
 	}
 }
 
