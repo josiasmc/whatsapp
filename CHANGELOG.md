@@ -1,7 +1,28 @@
-# unreleased
+# v0.10.4 (2023-11-16)
+
+* Added support for channels in `join` and `open` commands.
+* Added initial bridging of channel admin to room admin status.
+* Fixed panic when trying to send message in a portal which has a relaybot set
+  if the relaybot user gets logged out of WhatsApp.
+
+# v0.10.3 (2023-10-16)
+
+* Added basic support for channels.
+* Added default mime type for outgoing attachments when the origin Matrix
+  client forgets to specify the mime type.
+* Fixed legacy backfill creating portals for chats without messages.
+* Updated libwebp version used for encoding.
+
+# v0.10.2 (security update)
+
+* Stopped using libwebp for decoding webps.
+
+# v0.10.1 (2023-09-16)
 
 * Added support for double puppeting with arbitrary `as_token`s.
   See [docs](https://docs.mau.fi/bridges/general/double-puppeting.html#appservice-method-new) for more info.
+* Added retrying for media downloads when WhatsApp servers break and start
+  returning 429s and 503s.
 * Fixed logging in with 8-letter code.
 * Fixed syncing community announcement groups.
 * Changed "Incoming call" message to explicitly say you have to open WhatsApp
@@ -16,8 +37,8 @@
 * Added support for logging in by entering a 8-letter code on the phone instead
   of scanning a QR code.
   * Note: due to a server-side change, code login may only work when `os_name`
-    and `browser_name` in the config are set in a specific way. A future release
-    will automatically change the values to always work with code login.
+    and `browser_name` in the config are set in a specific way. This is fixed
+    in v0.10.1.
 
 # v0.9.0 (2023-07-16)
 

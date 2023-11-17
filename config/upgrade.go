@@ -27,8 +27,9 @@ import (
 func DoUpgrade(helper *up.Helper) {
 	bridgeconfig.Upgrader.DoUpgrade(helper)
 
-	helper.Copy(up.Str|up.Null, "segment_key")
-	helper.Copy(up.Str|up.Null, "segment_user_id")
+	helper.Copy(up.Str|up.Null, "analytics", "host")
+	helper.Copy(up.Str|up.Null, "analytics", "token")
+	helper.Copy(up.Str|up.Null, "analytics", "user_id")
 
 	helper.Copy(up.Bool, "metrics", "enabled")
 	helper.Copy(up.Str, "metrics", "listen")
@@ -62,7 +63,6 @@ func DoUpgrade(helper *up.Helper) {
 	helper.Copy(up.Bool, "bridge", "user_avatar_sync")
 	helper.Copy(up.Bool, "bridge", "bridge_matrix_leave")
 	helper.Copy(up.Bool, "bridge", "sync_direct_chat_list")
-	helper.Copy(up.Bool, "bridge", "default_bridge_receipts")
 	helper.Copy(up.Bool, "bridge", "default_bridge_presence")
 	helper.Copy(up.Bool, "bridge", "send_presence_on_typing")
 	helper.Copy(up.Bool, "bridge", "force_active_delivery_receipts")
@@ -103,6 +103,7 @@ func DoUpgrade(helper *up.Helper) {
 	helper.Copy(up.Bool, "bridge", "crash_on_stream_replaced")
 	helper.Copy(up.Bool, "bridge", "url_previews")
 	helper.Copy(up.Bool, "bridge", "caption_in_message")
+	helper.Copy(up.Bool, "bridge", "beeper_galleries")
 	if intPolls, ok := helper.Get(up.Int, "bridge", "extev_polls"); ok {
 		val := "false"
 		if intPolls != "0" {
@@ -180,7 +181,7 @@ var SpacedBlocks = [][]string{
 	{"appservice", "database"},
 	{"appservice", "id"},
 	{"appservice", "as_token"},
-	{"segment_key"},
+	{"analytics"},
 	{"metrics"},
 	{"whatsapp"},
 	{"bridge"},

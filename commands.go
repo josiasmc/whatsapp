@@ -238,18 +238,32 @@ func fnJoin(ce *WrappedCommandEvent) {
 	if len(ce.Args) == 0 {
 		ce.Reply("**Uso:** `unirme <enlace de invitación>`")
 		return
-	} else if !strings.HasPrefix(ce.Args[0], whatsmeow.InviteLinkPrefix) {
-		ce.Reply("Eso no se mira como un enlace de invitación a WhatsApp")
-		return
 	}
 
-	jid, err := ce.User.Client.JoinGroupWithLink(ce.Args[0])
-	if err != nil {
-		ce.Reply("Fallo al unirse al grupo: %v", err)
-		return
+	if strings.HasPrefix(ce.Args[0], whatsmeow.InviteLinkPrefix) {
+		jid, err := ce.User.Client.JoinGroupWithLink(ce.Args[0])
+		if err != nil {
+			ce.Reply("Fallo al unirse al grupo: %v", err)
+			return
+		}
+		ce.Log.Debugln("%s successfully joined group %s", ce.User.MXID, jid)
+		ce.Reply("Te has unido exitosamente al grupo `%s`, el portal será creado en breve", jid)
+	} else if strings.HasPrefix(ce.Args[0], whatsmeow.NewsletterLinkPrefix) {
+		info, err := ce.User.Client.GetNewsletterInfoWithInvite(ce.Args[0])
+		if err != nil {
+			ce.Reply("Fallo al conseguir la información del canal: %v", err)
+			return
+		}
+		err = ce.User.Client.FollowNewsletter(info.ID)
+		if err != nil {
+			ce.Reply("Fallo al seguir el canal: %v", err)
+			return
+		}
+		ce.Log.Debugln("%s successfully followed channel %s", ce.User.MXID, info.ID)
+		ce.Reply("Has comenzado a seguir el canal `%s`, el portal será creado en breve", info.ID)
+	} else {
+		ce.Reply("Eso no se mira como un enlace de invitación a WhatsApp")
 	}
-	ce.Log.Debugln("%s successfully joined group %s", ce.User.MXID, jid)
-	ce.Reply("Te has unido exitosamente al grupo `%s`, el portal será creado en breve", jid)
 }
 
 func tryDecryptEvent(crypto bridge.Crypto, evt *event.Event) (json.RawMessage, error) {
@@ -430,9 +444,11 @@ var cmdLogin = &commands.FullHandler{
 	Func: wrapCommand(fnLogin),
 	Name: "iniciar-sesion",
 	Help: commands.HelpMeta{
-		Section:     commands.HelpSectionAuth,
-		Description: "Vincular el puente a su cuenta de WhatsApp como un cliente web.",
-		Args:        "[_número de teléfono_]",
+		Section: commands.HelpSectionAuth,
+		Description: "Vincular el puente a su cuenta de WhatsApp como un cliente web." +
+			"El parámetro del número de teléfono es opcional: si se provee, el puente creará un código de 8 carácteres " +
+			"que se puede usar en lugar de un código QR.",
+		Args: "[_número de teléfono_]",
 	},
 }
 
@@ -996,23 +1012,37 @@ func fnOpen(ce *WrappedCommandEvent) {
 	} else {
 		jid = types.NewJID(ce.Args[0], types.GroupServer)
 	}
-	if jid.Server != types.GroupServer || (!strings.ContainsRune(jid.User, '-') && len(jid.User) < 15) {
+	if (jid.Server != types.GroupServer && jid.Server != types.NewsletterServer) || (!strings.ContainsRune(jid.User, '-') && len(jid.User) < 15) {
 		ce.Reply("Eso no se mira como un JID de grupo")
 		return
 	}
 
-	info, err := ce.User.Client.GetGroupInfo(jid)
-	if err != nil {
-		ce.Reply("No se pudo conseguir la información del grupo: %v", err)
-		return
+	var err error
+	var groupInfo *types.GroupInfo
+	var newsletterMetadata *types.NewsletterMetadata
+	switch jid.Server {
+	case types.GroupServer:
+		groupInfo, err = ce.User.Client.GetGroupInfo(jid)
+		if err != nil {
+			ce.Reply("No se pudo conseguir la información del grupo: %v", err)
+			return
+		}
+		jid = groupInfo.JID
+	case types.NewsletterServer:
+		newsletterMetadata, err = ce.User.Client.GetNewsletterInfo(jid)
+		if err != nil {
+			ce.Reply("No se pudo conseguir la información del canal: %v", err)
+			return
+		}
+		jid = newsletterMetadata.ID
 	}
 	ce.Log.Debugln("Importing", jid, "for", ce.User.MXID)
-	portal := ce.User.GetPortalByJID(info.JID)
+	portal := ce.User.GetPortalByJID(jid)
 	if len(portal.MXID) > 0 {
-		portal.UpdateMatrixRoom(ce.User, info)
+		portal.UpdateMatrixRoom(ce.User, groupInfo, newsletterMetadata)
 		ce.Reply("Sala de portal sincronizada.")
 	} else {
-		err = portal.CreateMatrixRoom(ce.User, info, true, true)
+		err = portal.CreateMatrixRoom(ce.User, groupInfo, newsletterMetadata, true, true)
 		if err != nil {
 			ce.Reply("No se pudo crear la sala: %v", err)
 		} else {
