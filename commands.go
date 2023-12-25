@@ -140,7 +140,7 @@ func fnUnsetRelay(ce *WrappedCommandEvent) {
 	} else {
 		ce.Portal.RelayUserID = ""
 		ce.Portal.Update(nil)
-		ce.Reply("Mensajes de usuarios que no tienen sesión iniciada en WhatsApp ahora dejarán de enviados por medio de su cuenta de WhatsApp")
+		ce.Reply("Mensajes de usuarios que no tienen sesión iniciada en WhatsApp ahora dejarán de ser enviados por medio de su cuenta de WhatsApp")
 	}
 }
 
