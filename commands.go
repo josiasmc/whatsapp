@@ -146,7 +146,7 @@ func fnUnsetRelay(ce *WrappedCommandEvent) {
 		if err != nil {
 			ce.ZLog.Err(err).Msg("Failed to save portal after clearing relay user")
 		}
-		ce.Reply("Mensajes de usuarios que no tienen sesión iniciada en WhatsApp ahora dejarán de enviados por medio de su cuenta de WhatsApp")
+		ce.Reply("Mensajes de usuarios que no tienen sesión iniciada en WhatsApp ahora dejarán de ser enviados por medio de su cuenta de WhatsApp")
 	}
 }
 
@@ -249,7 +249,7 @@ func fnJoin(ce *WrappedCommandEvent) {
 	if strings.HasPrefix(ce.Args[0], whatsmeow.InviteLinkPrefix) {
 		jid, err := ce.User.Client.JoinGroupWithLink(ce.Args[0])
 		if err != nil {
-			ce.Reply("Failed to join group: %v", err)
+			ce.Reply("Fallo al unirse al grupo: %v", err)
 			return
 		}
 		ce.ZLog.Debug().Stringer("group_jid", jid).Msg("User successfully joined WhatsApp group with link")
@@ -257,16 +257,16 @@ func fnJoin(ce *WrappedCommandEvent) {
 	} else if strings.HasPrefix(ce.Args[0], whatsmeow.NewsletterLinkPrefix) {
 		info, err := ce.User.Client.GetNewsletterInfoWithInvite(ce.Args[0])
 		if err != nil {
-			ce.Reply("Failed to get channel info: %v", err)
+			ce.Reply("Fallo al conseguir la información del canal: %v", err)
 			return
 		}
 		err = ce.User.Client.FollowNewsletter(info.ID)
 		if err != nil {
-			ce.Reply("Failed to follow channel: %v", err)
+			ce.Reply("Fallo al seguir el canal: %v", err)
 			return
 		}
 		ce.ZLog.Debug().Stringer("channel_jid", info.ID).Msg("User successfully followed WhatsApp channel with link")
-		ce.Reply("Siguiendo al canal `%s` exitosamente. El portal se creará en breve", info.ID)
+		ce.Reply("Has comenzado a seguir el canal `%s`, el portal será creado en breve", info.ID)
 	} else {
 		ce.Reply("Eso no se mira como un enlace de invitación a WhatsApp")
 	}
@@ -352,7 +352,7 @@ func fnCreate(ce *WrappedCommandEvent) {
 
 	members, err := ce.Bot.JoinedMembers(ce.Ctx, ce.RoomID)
 	if err != nil {
-		ce.Reply("Ocurrió un fallo al conseguir los miembros de la sala: %v", err)
+		ce.Reply("Ocurrió un error al conseguir los miembros de la sala: %v", err)
 		return
 	}
 
@@ -360,7 +360,7 @@ func fnCreate(ce *WrappedCommandEvent) {
 	err = ce.Bot.StateEvent(ce.Ctx, ce.RoomID, event.StateRoomName, "", &roomNameEvent)
 	if err != nil && !errors.Is(err, mautrix.MNotFound) {
 		ce.ZLog.Err(err).Msg("Failed to get room name to create group")
-		ce.Reply("Ocurrió un fallo al conseguir el nombre de la sala")
+		ce.Reply("Ocurrió un error al conseguir el nombre de la sala para crear el grupo")
 		return
 	} else if len(roomNameEvent.Name) == 0 {
 		ce.Reply("Por favor establezca un nombre para la sala primero")
@@ -371,7 +371,7 @@ func fnCreate(ce *WrappedCommandEvent) {
 	err = ce.Bot.StateEvent(ce.Ctx, ce.RoomID, event.StateEncryption, "", &encryptionEvent)
 	if err != nil && !errors.Is(err, mautrix.MNotFound) {
 		ce.ZLog.Err(err).Msg("Failed to get room encryption status to create group")
-		ce.Reply("Ocurrió un fallo al conseguir el estado de cifrado de la sala")
+		ce.Reply("Ocurrió un error al conseguir el estado de cifrado de la sala")
 		return
 	}
 
@@ -379,7 +379,7 @@ func fnCreate(ce *WrappedCommandEvent) {
 	err = ce.Bot.StateEvent(ce.Ctx, ce.RoomID, event.StateCreate, "", &createEvent)
 	if err != nil && !errors.Is(err, mautrix.MNotFound) {
 		ce.ZLog.Err(err).Msg("Failed to get room create event to create group")
-		ce.Reply("Ocurrió un fallo al crear el evento de la sala")
+		ce.Reply("Ocurrió un error al conseguir el evento de creación de la sala")
 		return
 	}
 
@@ -464,10 +464,10 @@ var cmdLogin = &commands.FullHandler{
 	Name: "iniciar-sesion",
 	Help: commands.HelpMeta{
 		Section: commands.HelpSectionAuth,
-		Description: "Vincular el puente a su cuenta de WhatsApp como un cliente web. " +
-			"El parámetro de número de teléfono es opcional: si se provee, el puente creará un código de inicio de sesión de 8 dígitos " +
-			"que se puede usar en lugar de código QR.",
-		Args: "[_phone number_]",
+		Description: "Vincular el puente a su cuenta de WhatsApp como un cliente web." +
+			"El parámetro del número de teléfono es opcional: si se provee, el puente creará un código de 8 carácteres " +
+			"que se puede usar en lugar de un código QR.",
+		Args: "[_número de teléfono_]",
 	},
 }
 
@@ -487,7 +487,7 @@ func fnLogin(ce *WrappedCommandEvent) {
 	if len(ce.Args) > 0 {
 		phoneNumber = strings.TrimSpace(strings.Join(ce.Args, " "))
 		if !looksLikeAPhoneRegex.MatchString(phoneNumber) {
-			ce.Reply("When specifying a phone number, it must be provided in international format without spaces or other extra characters")
+			ce.Reply("Al especificar un número de teléfono, debe ser provisto en el formato internacional sin espacios u otros carácteres")
 			return
 		}
 	}
@@ -503,11 +503,11 @@ func fnLogin(ce *WrappedCommandEvent) {
 		pairingCode, err := ce.User.Client.PairPhone(phoneNumber, true, whatsmeow.PairClientChrome, "Chrome (Linux)")
 		if err != nil {
 			ce.ZLog.Err(err).Msg("Failed to start phone code login")
-			ce.Reply("Failed to start phone code login: %v", err)
+			ce.Reply("No se pudo comenzar el inicio de sesión por código de teléfono: %v", err)
 			go ce.User.DeleteConnection()
 			return
 		}
-		ce.Reply("Scan the code below or enter the following code on your phone to log in: **%s**", pairingCode)
+		ce.Reply("Escanea el código abajo o ingrese el siguiente código en su teléfono para iniciar sesión: **%s**", pairingCode)
 	}
 
 	var qrEventID id.EventID
@@ -731,7 +731,7 @@ func fnPing(ce *WrappedCommandEvent) {
 	} else if ce.User.Client == nil || !ce.User.Client.IsConnected() {
 		ce.Reply("Tienes sesión iniciada como +%s (dispositivo #%d), pero no tienes una conexión con WhatsApp.", ce.User.JID.User, ce.User.JID.Device)
 	} else {
-		ce.Reply("Tienes sesión iniciada como +%s (dispositivo #%d), y la conexión a WhatsApp es OK (seguro)", ce.User.JID.User, ce.User.JID.Device)
+		ce.Reply("Tienes sesión iniciada como +%s (dispositivo #%d), y la conexión a WhatsApp está funcional (seguro)", ce.User.JID.User, ce.User.JID.Device)
 		if !ce.User.PhoneRecentlySeen(false) {
 			ce.Reply("El teléfono no se ha visto en %s", formatDisconnectTime(time.Now().Sub(ce.User.PhoneLastSeen)))
 		}
@@ -766,7 +766,7 @@ var cmdDeletePortal = &commands.FullHandler{
 	Name: "eliminar-portal",
 	Help: commands.HelpMeta{
 		Section:     HelpSectionPortalManagement,
-		Description: "Elimina el portal corriente. Si el portal es utilizado por otras personas, está limitado a sólo administradores.",
+		Description: "Elimina el portal corriente. Si el portal es utilizado por otras personas, este comando está limitado a sólo administradores.",
 	},
 	RequiresPortal: true,
 }
@@ -813,7 +813,7 @@ func fnDeleteAllPortals(ce *WrappedCommandEvent) {
 	leave := func(portal *Portal) {
 		if len(portal.MXID) > 0 {
 			_, _ = portal.MainIntent().KickUser(ce.Ctx, portal.MXID, &mautrix.ReqKickUser{
-				Reason: "Deleting portal",
+				Reason: "Eliminando portal",
 				UserID: ce.User.MXID,
 			})
 		}
@@ -883,11 +883,11 @@ func formatGroups(input []*types.GroupInfo, query string) (result []string) {
 
 var cmdList = &commands.FullHandler{
 	Func: wrapCommand(fnList),
-	Name: "list",
+	Name: "listar",
 	Help: commands.HelpMeta{
 		Section:     HelpSectionMiscellaneous,
-		Description: "Get a list of all contacts and groups.",
-		Args:        "<`contacts`|`groups`> [_page_] [_items per page_]",
+		Description: "Conseguir una lista de todos los contactos y grupos.",
+		Args:        "<`contactos`|`grupos`> [_página_] [_artículos por página_]",
 	},
 	RequiresLogin: true,
 }
@@ -1145,7 +1145,7 @@ func fnSync(ce *WrappedCommandEvent) {
 		return
 	}
 	if createPortals && !groups {
-		ce.Reply("`--create-portals` can only be used with `sync groups`")
+		ce.Reply("`--crear-portales` sólo puede ser usado con `sincronizar grupos`")
 		return
 	}
 
@@ -1179,7 +1179,7 @@ func fnSync(ce *WrappedCommandEvent) {
 		keys, err := ce.Bridge.DB.Portal.FindPrivateChatsNotInSpace(ce.Ctx, ce.User.JID)
 		if err != nil {
 			ce.ZLog.Err(err).Msg("Failed to get list of private chats not in space")
-			ce.Reply("Failed to get list of private chats not in space")
+			ce.Reply("Ocurrió un error al conseguir lista de chats privados que no están en el espacio")
 			return
 		}
 		count := 0

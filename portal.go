@@ -3169,7 +3169,7 @@ func (portal *Portal) convertLocationMessage(ctx context.Context, intent *appser
 }
 
 const inviteMsg = `%s<hr/>La invitación para unirse a "%s" expira en %s. Responda a este mensaje con <code>!wa aceptar</code> para aceptar la invitación.`
-const inviteMsgBroken = `%s<hr/>Esta invitación para unirse a "%s" expira en %s. Pero, el mensaje de invitación está roto o no es soportado y no se puede aceptar.`
+const inviteMsgBroken = `%s<hr/>La invitación para unirse a "%s" expira en %s. Sin embargo, el mensaje de invitación está roto o no es soportado y no puede ser aceptado.`
 const inviteMetaField = "fi.mau.whatsapp.invite"
 const escapedInviteMetaField = `fi\.mau\.whatsapp\.invite`
 
