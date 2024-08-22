@@ -17,14 +17,18 @@
 package main
 
 import (
+	"context"
 	_ "embed"
-	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
+	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 
 	"go.mau.fi/whatsmeow"
@@ -33,13 +37,13 @@ import (
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types"
 
-	"maunium.net/go/mautrix"
+	"go.mau.fi/util/configupgrade"
+
 	"maunium.net/go/mautrix/bridge"
 	"maunium.net/go/mautrix/bridge/commands"
 	"maunium.net/go/mautrix/bridge/status"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
-	"maunium.net/go/mautrix/util/configupgrade"
 
 	"maunium.net/go/mautrix-whatsapp/config"
 	"maunium.net/go/mautrix-whatsapp/database"
@@ -91,27 +95,29 @@ func (br *WABridge) Init() {
 	br.EventProcessor.On(TypeMSC3381PollResponse, br.MatrixHandler.HandleMessage)
 	br.EventProcessor.On(TypeMSC3381V2PollResponse, br.MatrixHandler.HandleMessage)
 
-	Segment.log = br.Log.Sub("Segment")
-	Segment.key = br.Config.SegmentKey
-	Segment.userID = br.Config.SegmentUserID
-	if Segment.IsEnabled() {
-		Segment.log.Infoln("Segment metrics are enabled")
-		if Segment.userID != "" {
-			Segment.log.Infoln("Overriding Segment user_id with %v", Segment.userID)
-		}
+	Analytics.log = br.ZLog.With().Str("component", "analytics").Logger()
+	Analytics.url = (&url.URL{
+		Scheme: "https",
+		Host:   br.Config.Analytics.Host,
+		Path:   "/v1/track",
+	}).String()
+	Analytics.key = br.Config.Analytics.Token
+	Analytics.userID = br.Config.Analytics.UserID
+	if Analytics.IsEnabled() {
+		Analytics.log.Info().Str("override_user_id", Analytics.userID).Msg("Analytics metrics are enabled")
 	}
 
-	br.DB = database.New(br.Bridge.DB, br.Log.Sub("Database"))
-	br.WAContainer = sqlstore.NewWithDB(br.DB.RawDB, br.DB.Dialect.String(), &waLogger{br.Log.Sub("Database").Sub("WhatsApp")})
+	br.DB = database.New(br.Bridge.DB)
+	br.WAContainer = sqlstore.NewWithDB(br.DB.RawDB, br.DB.Dialect.String(), waLog.Zerolog(br.ZLog.With().Str("db_section", "whatsmeow").Logger()))
 	br.WAContainer.DatabaseErrorHandler = br.DB.HandleSignalStoreError
 
 	ss := br.Config.Bridge.Provisioning.SharedSecret
 	if len(ss) > 0 && ss != "disable" {
-		br.Provisioning = &ProvisioningAPI{bridge: br}
+		br.Provisioning = &ProvisioningAPI{bridge: br, log: br.ZLog.With().Str("component", "provisioning").Logger()}
 	}
 
 	br.Formatter = NewFormatter(br)
-	br.Metrics = NewMetricsHandler(br.Config.Metrics.Listen, br.Log.Sub("Metrics"), br.DB)
+	br.Metrics = NewMetricsHandler(br.Config.Metrics.Listen, br.ZLog.With().Str("component", "metrics").Logger(), br.DB)
 	br.MatrixHandler.TrackEventDuration = br.Metrics.TrackMatrixEvent
 
 	store.BaseClientPayload.UserAgent.OsVersion = proto.String(br.WAVersion)
@@ -134,7 +140,7 @@ func (br *WABridge) Init() {
 		store.DeviceProps.Version.Secondary = proto.Uint32(uint32(secondary))
 		store.DeviceProps.Version.Tertiary = proto.Uint32(uint32(tertiary))
 	}
-	platformID, ok := waProto.DeviceProps_PlatformType_value[strings.ToUpper(br.Config.WhatsApp.BrowserName)]
+	platformID, ok := waCompanionReg.DeviceProps_PlatformType_value[strings.ToUpper(br.Config.WhatsApp.BrowserName)]
 	if ok {
 		store.DeviceProps.PlatformType = waProto.DeviceProps_PlatformType(platformID).Enum()
 	}
@@ -143,14 +149,24 @@ func (br *WABridge) Init() {
 func (br *WABridge) Start() {
 	err := br.WAContainer.Upgrade()
 	if err != nil {
-		br.Log.Fatalln("Failed to upgrade whatsmeow database: %v", err)
+		br.ZLog.WithLevel(zerolog.FatalLevel).Err(err).Msg("Failed to upgrade whatsmeow database")
 		os.Exit(15)
 	}
 	if br.Provisioning != nil {
-		br.Log.Debugln("Initializing provisioning API")
 		br.Provisioning.Init()
 	}
-	go br.CheckWhatsAppUpdate()
+	// TODO find out how the new whatsapp version checks for updates
+	ver, err := whatsmeow.GetLatestVersion(br.AS.HTTPClient)
+	if err != nil {
+		br.ZLog.Err(err).Msg("Failed to get latest WhatsApp web version number")
+	} else {
+		br.ZLog.Debug().
+			Stringer("hardcoded_version", store.GetWAVersion()).
+			Stringer("latest_version", *ver).
+			Msg("Got latest WhatsApp web version number")
+		store.SetWAVersion(*ver)
+	}
+	br.WaitWebsocketConnected()
 	go br.StartUsers()
 	if br.Config.Metrics.Enabled {
 		go br.Metrics.Start()
@@ -159,31 +175,10 @@ func (br *WABridge) Start() {
 	go br.Loop()
 }
 
-func (br *WABridge) CheckWhatsAppUpdate() {
-	br.Log.Debugfln("Checking for WhatsApp web update")
-	resp, err := whatsmeow.CheckUpdate(http.DefaultClient)
-	if err != nil {
-		br.Log.Warnfln("Failed to check for WhatsApp web update: %v", err)
-		return
-	}
-	if store.GetWAVersion() == resp.ParsedVersion {
-		br.Log.Debugfln("Bridge is using latest WhatsApp web protocol")
-	} else if store.GetWAVersion().LessThan(resp.ParsedVersion) {
-		if resp.IsBelowHard || resp.IsBroken {
-			br.Log.Warnfln("Bridge is using outdated WhatsApp web protocol and probably doesn't work anymore (%s, latest is %s)", store.GetWAVersion(), resp.ParsedVersion)
-		} else if resp.IsBelowSoft {
-			br.Log.Infofln("Bridge is using outdated WhatsApp web protocol (%s, latest is %s)", store.GetWAVersion(), resp.ParsedVersion)
-		} else {
-			br.Log.Debugfln("Bridge is using outdated WhatsApp web protocol (%s, latest is %s)", store.GetWAVersion(), resp.ParsedVersion)
-		}
-	} else {
-		br.Log.Debugfln("Bridge is using newer than latest WhatsApp web protocol")
-	}
-}
-
 func (br *WABridge) Loop() {
+	ctx := br.ZLog.With().Str("action", "background loop").Logger().WithContext(context.TODO())
 	for {
-		br.SleepAndDeleteUpcoming()
+		br.SleepAndDeleteUpcoming(ctx)
 		time.Sleep(1 * time.Hour)
 		br.WarnUsersAboutDisconnection()
 	}
@@ -193,14 +188,14 @@ func (br *WABridge) WarnUsersAboutDisconnection() {
 	br.usersLock.Lock()
 	for _, user := range br.usersByUsername {
 		if user.IsConnected() && !user.PhoneRecentlySeen(true) {
-			go user.sendPhoneOfflineWarning()
+			go user.sendPhoneOfflineWarning(context.TODO())
 		}
 	}
 	br.usersLock.Unlock()
 }
 
 func (br *WABridge) StartUsers() {
-	br.Log.Debugln("Starting users")
+	br.ZLog.Debug().Msg("Starting users")
 	foundAnySessions := false
 	for _, user := range br.GetAllUsers() {
 		if !user.JID.IsEmpty() {
@@ -211,13 +206,13 @@ func (br *WABridge) StartUsers() {
 	if !foundAnySessions {
 		br.SendGlobalBridgeState(status.BridgeState{StateEvent: status.StateUnconfigured}.Fill(nil))
 	}
-	br.Log.Debugln("Starting custom puppets")
+	br.ZLog.Debug().Msg("Starting custom puppets")
 	for _, loopuppet := range br.GetAllPuppetsWithCustomMXID() {
 		go func(puppet *Puppet) {
-			puppet.log.Debugln("Starting custom puppet", puppet.CustomMXID)
+			puppet.zlog.Debug().Stringer("custom_mxid", puppet.CustomMXID).Msg("Starting double puppet")
 			err := puppet.StartCustomMXID(true)
 			if err != nil {
-				puppet.log.Errorln("Failed to start custom puppet:", err)
+				puppet.zlog.Err(err).Stringer("custom_mxid", puppet.CustomMXID).Msg("Failed to start double puppet")
 			}
 		}(loopuppet)
 	}
@@ -229,7 +224,7 @@ func (br *WABridge) Stop() {
 		if user.Client == nil {
 			continue
 		}
-		br.Log.Debugln("Disconnecting", user.MXID)
+		user.zlog.Debug().Msg("Disconnecting user")
 		user.Client.Disconnect()
 		close(user.historySyncs)
 	}
@@ -247,20 +242,6 @@ func (br *WABridge) GetConfigPtr() interface{} {
 	return br.Config
 }
 
-const unstableFeatureBatchSending = "org.matrix.msc2716"
-
-func (br *WABridge) CheckFeatures(versions *mautrix.RespVersions) (string, bool) {
-	if br.Config.Bridge.HistorySync.Backfill {
-		supported, known := versions.UnstableFeatures[unstableFeatureBatchSending]
-		if !known {
-			return "Backfilling is enabled in bridge config, but homeserver does not support MSC2716 batch sending", false
-		} else if !supported {
-			return "Backfilling is enabled in bridge config, but MSC2716 batch sending is not enabled on homeserver", false
-		}
-	}
-	return "", true
-}
-
 func main() {
 	br := &WABridge{
 		usersByMXID:         make(map[id.UserID]*User),
@@ -273,11 +254,13 @@ func main() {
 		puppetsByCustomMXID: make(map[id.UserID]*Puppet),
 	}
 	br.Bridge = bridge.Bridge{
-		Name:         "mautrix-whatsapp",
-		URL:          "https://github.com/mautrix/whatsapp",
-		Description:  "A Matrix-WhatsApp puppeting bridge.",
-		Version:      "0.8.2",
-		ProtocolName: "WhatsApp",
+		Name:              "mautrix-whatsapp",
+		URL:               "https://github.com/mautrix/whatsapp",
+		Description:       "A Matrix-WhatsApp puppeting bridge.",
+		Version:           "0.10.9",
+		ProtocolName:      "WhatsApp",
+		BeeperServiceName: "whatsapp",
+		BeeperNetworkName: "whatsapp",
 
 		CryptoPickleKey: "maunium.net/go/mautrix-whatsapp",
 

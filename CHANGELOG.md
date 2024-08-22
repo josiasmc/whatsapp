@@ -1,9 +1,125 @@
-# unreleased
+# v0.10.9 (2024-07-16)
+
+* Added support for receiving Meta AI messages.
+* Fixed `m.relates_to` handling bug in previous release.
+
+# v0.10.8 (2024-06-16)
+
+* Added proxying options to config.
+* Updated fallback message for live locations and polls to clarify the user
+  should open the native WhatsApp app.
+
+# v0.10.7 (2024-04-16)
+
+* Changed media download retries to be handled asynchronously instead of
+  blocking other messages.
+
+# v0.10.6 (2024-03-16)
+
+* Bumped minimum Go version to 1.21.
+* Added 8-letter code pairing support to provisioning API.
+* Added more bugs to fix later.
+* Renamed default branch from `master` to `main`.
+
+# v0.10.5 (2023-12-16)
+
+* Added support for sending media to channels.
+* Fixed voting in polls (seems to have broken due to a server-side change).
+* Improved memory usage for bridges with lots of portals.
+
+# v0.10.4 (2023-11-16)
+
+* Added support for channels in `join` and `open` commands.
+* Added initial bridging of channel admin to room admin status.
+* Fixed panic when trying to send message in a portal which has a relaybot set
+  if the relaybot user gets logged out of WhatsApp.
+
+# v0.10.3 (2023-10-16)
+
+* Added basic support for channels.
+* Added default mime type for outgoing attachments when the origin Matrix
+  client forgets to specify the mime type.
+* Fixed legacy backfill creating portals for chats without messages.
+* Updated libwebp version used for encoding.
+
+# v0.10.2 (security update)
+
+* Stopped using libwebp for decoding webps.
+
+# v0.10.1 (2023-09-16)
+
+* Added support for double puppeting with arbitrary `as_token`s.
+  See [docs](https://docs.mau.fi/bridges/general/double-puppeting.html#appservice-method-new) for more info.
+* Added retrying for media downloads when WhatsApp servers break and start
+  returning 429s and 503s.
+* Fixed logging in with 8-letter code.
+* Fixed syncing community announcement groups.
+* Changed "Incoming call" message to explicitly say you have to open WhatsApp
+  on your phone to answer.
+
+# v0.10.0 (2023-08-16)
+
+* Bumped minimum Go version to 1.20.
+* Added automatic re-requesting of undecryptable WhatsApp messages from primary
+  device.
+* Added support for round video messages.
+* Added support for logging in by entering a 8-letter code on the phone instead
+  of scanning a QR code.
+  * Note: due to a server-side change, code login may only work when `os_name`
+    and `browser_name` in the config are set in a specific way. This is fixed
+    in v0.10.1.
+
+# v0.9.0 (2023-07-16)
+
+* Removed MSC2716 support.
+* Added legacy backfill support.
+* Updated Docker image to Alpine 3.18.
+* Changed all ogg audio messages from WhatsApp to be bridged as voice messages
+  to Matrix, as WhatsApp removes the voice message flag when forwarding for
+  some reason.
+* Added Prometheus metric for WhatsApp connection failures
+  (thanks to [@Half-Shot] in [#620]).
+
+[#620]: https://github.com/mautrix/whatsapp/pull/620
+
+# v0.8.6 (2023-06-16)
+
+* Implemented intentional mentions for outgoing messages.
+* Added support for appservice websockets.
+* Added additional index on message table to make bridging outgoing read
+  receipts and messages faster in chats with lots of messages.
+* Fixed handling WhatsApp poll messages that only allow one choice.
+* Fixed bridging new groups immediately when they're created.
+
+# v0.8.5 (2023-05-16)
+
+* Added option to disable reply fallbacks entirely.
+* Added provisioning API for joining groups with invite links.
+* Added error reply to encrypted messages if the bridge isn't configured to do
+  encryption.
+* Changed audio messages with captions to be sent as documents to WhatsApp
+  (otherwise the caption would be lost).
+
+# v0.8.4 (2023-04-16)
+
+* Enabled sending edits to WhatsApp by default.
+* Added options to automatically ratchet/delete megolm sessions to minimize
+  access to old messages.
+* Added automatic media re-requesting when download fails with 403 error.
+* Added option to not set room name/avatar even in encrypted rooms.
+
+# v0.8.3 (2023-03-16)
 
 * Bumped minimum Go version to 1.19.
 * Switched to zerolog for logging.
   * The basic log config will be migrated automatically, but you may want to
     tweak it as the options are different.
+* Implemented [MSC3952]: Intentional Mentions
+  (currently only for incoming messages).
+* Implemented [MSC2659]: Application service ping endpoint.
+
+[MSC3952]: https://github.com/matrix-org/matrix-spec-proposals/pull/3952
+[MSC2659]: https://github.com/matrix-org/matrix-spec-proposals/pull/2659
 
 # v0.8.2 (2023-02-16)
 

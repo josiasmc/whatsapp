@@ -1,5 +1,5 @@
 // mautrix-whatsapp - A Matrix-WhatsApp puppeting bridge.
-// Copyright (C) 2021 Tulir Asokan
+// Copyright (C) 2023 Tulir Asokan
 //
 // This program is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Affero General Public License as published by
@@ -57,17 +57,16 @@ type BridgeConfig struct {
 	IdentityChangeNotices bool `yaml:"identity_change_notices"`
 
 	HistorySync struct {
-		CreatePortals bool `yaml:"create_portals"`
-		Backfill      bool `yaml:"backfill"`
+		Backfill bool `yaml:"backfill"`
 
-		DoublePuppetBackfill bool `yaml:"double_puppet_backfill"`
-		RequestFullSync      bool `yaml:"request_full_sync"`
-		FullSyncConfig       struct {
+		RequestFullSync bool `yaml:"request_full_sync"`
+		FullSyncConfig  struct {
 			DaysLimit    uint32 `yaml:"days_limit"`
 			SizeLimit    uint32 `yaml:"size_mb_limit"`
 			StorageQuota uint32 `yaml:"storage_quota_mb"`
 		}
 		MaxInitialConversations int `yaml:"max_initial_conversations"`
+		MessageCount            int `yaml:"message_count"`
 		UnreadHoursThreshold    int `yaml:"unread_hours_threshold"`
 
 		Immediate struct {
@@ -79,6 +78,7 @@ type BridgeConfig struct {
 			AutoRequestMedia bool               `yaml:"auto_request_media"`
 			RequestMethod    MediaRequestMethod `yaml:"request_method"`
 			RequestLocalTime int                `yaml:"request_local_time"`
+			MaxAsyncHandle   int64              `yaml:"max_async_handle"`
 		} `yaml:"media_requests"`
 
 		Deferred []DeferredConfig `yaml:"deferred"`
@@ -86,38 +86,36 @@ type BridgeConfig struct {
 	UserAvatarSync    bool `yaml:"user_avatar_sync"`
 	BridgeMatrixLeave bool `yaml:"bridge_matrix_leave"`
 
-	SyncWithCustomPuppets  bool `yaml:"sync_with_custom_puppets"`
 	SyncDirectChatList     bool `yaml:"sync_direct_chat_list"`
 	SyncManualMarkedUnread bool `yaml:"sync_manual_marked_unread"`
-	DefaultBridgeReceipts  bool `yaml:"default_bridge_receipts"`
 	DefaultBridgePresence  bool `yaml:"default_bridge_presence"`
 	SendPresenceOnTyping   bool `yaml:"send_presence_on_typing"`
 
 	ForceActiveDeliveryReceipts bool `yaml:"force_active_delivery_receipts"`
 
-	DoublePuppetServerMap      map[string]string `yaml:"double_puppet_server_map"`
-	DoublePuppetAllowDiscovery bool              `yaml:"double_puppet_allow_discovery"`
-	LoginSharedSecretMap       map[string]string `yaml:"login_shared_secret_map"`
+	DoublePuppetConfig bridgeconfig.DoublePuppetConfig `yaml:",inline"`
 
-	PrivateChatPortalMeta bool   `yaml:"private_chat_portal_meta"`
-	ParallelMemberSync    bool   `yaml:"parallel_member_sync"`
-	BridgeNotices         bool   `yaml:"bridge_notices"`
-	ResendBridgeInfo      bool   `yaml:"resend_bridge_info"`
-	MuteBridging          bool   `yaml:"mute_bridging"`
-	ArchiveTag            string `yaml:"archive_tag"`
-	PinnedTag             string `yaml:"pinned_tag"`
-	TagOnlyOnCreate       bool   `yaml:"tag_only_on_create"`
-	MarkReadOnlyOnCreate  bool   `yaml:"mark_read_only_on_create"`
-	EnableStatusBroadcast bool   `yaml:"enable_status_broadcast"`
-	MuteStatusBroadcast   bool   `yaml:"mute_status_broadcast"`
-	StatusBroadcastTag    string `yaml:"status_broadcast_tag"`
-	WhatsappThumbnail     bool   `yaml:"whatsapp_thumbnail"`
-	AllowUserInvite       bool   `yaml:"allow_user_invite"`
-	FederateRooms         bool   `yaml:"federate_rooms"`
-	URLPreviews           bool   `yaml:"url_previews"`
-	CaptionInMessage      bool   `yaml:"caption_in_message"`
-	ExtEvPolls            bool   `yaml:"extev_polls"`
-	SendWhatsAppEdits     bool   `yaml:"send_whatsapp_edits"`
+	PrivateChatPortalMeta string        `yaml:"private_chat_portal_meta"`
+	ParallelMemberSync    bool          `yaml:"parallel_member_sync"`
+	BridgeNotices         bool          `yaml:"bridge_notices"`
+	ResendBridgeInfo      bool          `yaml:"resend_bridge_info"`
+	MuteBridging          bool          `yaml:"mute_bridging"`
+	ArchiveTag            event.RoomTag `yaml:"archive_tag"`
+	PinnedTag             event.RoomTag `yaml:"pinned_tag"`
+	TagOnlyOnCreate       bool          `yaml:"tag_only_on_create"`
+	MarkReadOnlyOnCreate  bool          `yaml:"mark_read_only_on_create"`
+	EnableStatusBroadcast bool          `yaml:"enable_status_broadcast"`
+	MuteStatusBroadcast   bool          `yaml:"mute_status_broadcast"`
+	StatusBroadcastTag    event.RoomTag `yaml:"status_broadcast_tag"`
+	WhatsappThumbnail     bool          `yaml:"whatsapp_thumbnail"`
+	AllowUserInvite       bool          `yaml:"allow_user_invite"`
+	FederateRooms         bool          `yaml:"federate_rooms"`
+	URLPreviews           bool          `yaml:"url_previews"`
+	CaptionInMessage      bool          `yaml:"caption_in_message"`
+	BeeperGalleries       bool          `yaml:"beeper_galleries"`
+	ExtEvPolls            bool          `yaml:"extev_polls"`
+	CrossRoomReplies      bool          `yaml:"cross_room_replies"`
+	DisableReplyFallbacks bool          `yaml:"disable_reply_fallbacks"`
 
 	MessageHandlingTimeout struct {
 		ErrorAfterStr string `yaml:"error_after"`
@@ -139,8 +137,9 @@ type BridgeConfig struct {
 	Encryption bridgeconfig.EncryptionConfig `yaml:"encryption"`
 
 	Provisioning struct {
-		Prefix       string `yaml:"prefix"`
-		SharedSecret string `yaml:"shared_secret"`
+		Prefix         string `yaml:"prefix"`
+		SharedSecret   string `yaml:"shared_secret"`
+		DebugEndpoints bool   `yaml:"debug_endpoints"`
 	} `yaml:"provisioning"`
 
 	Permissions bridgeconfig.PermissionConfig `yaml:"permissions"`
@@ -149,6 +148,10 @@ type BridgeConfig struct {
 
 	ParsedUsernameTemplate *template.Template `yaml:"-"`
 	displaynameTemplate    *template.Template `yaml:"-"`
+}
+
+func (bc BridgeConfig) GetDoublePuppetConfig() bridgeconfig.DoublePuppetConfig {
+	return bc.DoublePuppetConfig
 }
 
 func (bc BridgeConfig) GetEncryptionConfig() bridgeconfig.EncryptionConfig {

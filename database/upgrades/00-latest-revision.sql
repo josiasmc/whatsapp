@@ -1,4 +1,4 @@
--- v0 -> v54: Latest revision
+-- v0 -> v57 (compatible with v45+): Latest revision
 
 CREATE TABLE "user" (
     mxid     TEXT PRIMARY KEY,
@@ -43,14 +43,15 @@ CREATE TABLE portal (
 CREATE INDEX portal_parent_group_idx ON portal(parent_group);
 
 CREATE TABLE puppet (
-    username     TEXT PRIMARY KEY,
-    displayname  TEXT,
-    name_quality SMALLINT,
-    avatar       TEXT,
-    avatar_url   TEXT,
-    name_set     BOOLEAN NOT NULL DEFAULT false,
-    avatar_set   BOOLEAN NOT NULL DEFAULT false,
-    last_sync    BIGINT NOT NULL DEFAULT 0,
+    username         TEXT PRIMARY KEY,
+    displayname      TEXT,
+    name_quality     SMALLINT,
+    avatar           TEXT,
+    avatar_url       TEXT,
+    name_set         BOOLEAN NOT NULL DEFAULT false,
+    avatar_set       BOOLEAN NOT NULL DEFAULT false,
+    contact_info_set BOOLEAN NOT NULL DEFAULT false,
+    last_sync        BIGINT NOT NULL DEFAULT 0,
 
     custom_mxid  TEXT,
     access_token TEXT,
@@ -69,6 +70,7 @@ CREATE TABLE message (
     jid           TEXT,
     mxid          TEXT UNIQUE,
     sender        TEXT,
+    sender_mxid   TEXT NOT NULL DEFAULT '',
     timestamp     BIGINT,
     sent          BOOLEAN,
     error         error_type,
@@ -79,6 +81,8 @@ CREATE TABLE message (
     PRIMARY KEY (chat_jid, chat_receiver, jid),
     FOREIGN KEY (chat_jid, chat_receiver) REFERENCES portal(jid, receiver) ON DELETE CASCADE
 );
+
+CREATE INDEX message_timestamp_idx ON message (chat_jid, chat_receiver, timestamp);
 
 CREATE TABLE poll_option_id (
     msg_mxid TEXT,
