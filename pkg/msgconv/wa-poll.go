@@ -53,8 +53,8 @@ func (mc *MessageConverter) convertPollCreationMessage(ctx context.Context, msg 
 			"org.matrix.msc1767.text": opt.GetOptionName(),
 		}
 	}
-	body := fmt.Sprintf("%s\n\n%s\n\n(This message is a poll. Please open WhatsApp to vote.)", msg.GetName(), strings.Join(optionsListText, "\n"))
-	formattedBody := fmt.Sprintf("<p>%s</p><ol>%s</ol><p>(This message is a poll. Please open WhatsApp to vote.)</p>", event.TextToHTML(msg.GetName()), strings.Join(optionsListHTML, ""))
+	body := fmt.Sprintf("%s\n\n%s\n\n(Este mensaje es una encuesta. Por favor abra la app de WhatsApp para votar.)", msg.GetName(), strings.Join(optionsListText, "\n"))
+	formattedBody := fmt.Sprintf("<p>%s</p><ol>%s</ol><p>(Este mensaje es una encuesta. Por favor abra la app de WhatsApp para votar.)</p>", event.TextToHTML(msg.GetName()), strings.Join(optionsListHTML, ""))
 	maxChoices := int(msg.GetSelectableOptionsCount())
 	if maxChoices <= 0 {
 		maxChoices = len(optionNames)

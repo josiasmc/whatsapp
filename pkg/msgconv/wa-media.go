@@ -58,7 +58,7 @@ func (mc *MessageConverter) convertMediaMessage(
 			Type: event.EventMessage,
 			Content: &event.MessageEventContent{
 				MsgType: event.MsgNotice,
-				Body:    fmt.Sprintf("You received a view once %s. For added privacy, you can only open it on the WhatsApp app.", typeName),
+				Body:    fmt.Sprintf("Recibiste un %s de visualización única. Para más privacidad, solamente puedes abrirlo en la app de WhatsApp.", typeName),
 			},
 		}, nil
 	}

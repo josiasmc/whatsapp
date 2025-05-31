@@ -81,13 +81,13 @@ func (mc *MessageConverter) convertLocationMessage(ctx context.Context, msg *waE
 
 func (mc *MessageConverter) convertLiveLocationMessage(ctx context.Context, msg *waE2E.LiveLocationMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
 	content := &event.MessageEventContent{
-		Body:    "Started sharing live location",
+		Body:    "Comenzó a compartir la ubicación en tiempo real",
 		MsgType: event.MsgNotice,
 	}
 	if len(msg.GetCaption()) > 0 {
 		content.Body += ": " + msg.GetCaption()
 	}
-	content.Body += "\n\nUse the WhatsApp app to see the location."
+	content.Body += "\n\nUsa la app de WhatsApp para mirar la ubicación."
 	return &bridgev2.ConvertedMessagePart{
 		Type:    event.EventMessage,
 		Content: content,

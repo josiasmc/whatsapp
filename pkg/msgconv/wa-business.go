@@ -64,7 +64,7 @@ func (mc *MessageConverter) convertTemplateMessage(ctx context.Context, info *ty
 		}
 		description := strings.Join(descriptions, " - ")
 		if addButtonText {
-			description += "\nUse the WhatsApp app to click buttons"
+			description += "\nUsa la app de WhatsApp para presionar los botones"
 		}
 		content = fmt.Sprintf("%s\n\n%s", content, description)
 	}
@@ -121,7 +121,7 @@ func (mc *MessageConverter) convertInteractiveMessage(ctx context.Context, info 
 			for i, button := range buttons {
 				descriptions[i] = fmt.Sprintf("<%s>", button.GetName())
 			}
-			content = fmt.Sprintf("%s\n\n%s\nUse the WhatsApp app to click buttons", content, strings.Join(descriptions, " - "))
+			content = fmt.Sprintf("%s\n\n%s\nUsa la app de WhatsApp para presionar los botones", content, strings.Join(descriptions, " - "))
 		}
 	case *waE2E.InteractiveMessage_CarouselMessage_:
 		content = fmt.Sprintf("%s\n\nUnsupported carousel message", content)
@@ -177,7 +177,7 @@ func (mc *MessageConverter) convertButtonsMessage(ctx context.Context, info *typ
 		for i, button := range buttons {
 			descriptions[i] = fmt.Sprintf("<%s>", button.GetButtonText().GetDisplayText())
 		}
-		content = fmt.Sprintf("%s\n\n%s\nUse the WhatsApp app to click buttons", content, strings.Join(descriptions, " - "))
+		content = fmt.Sprintf("%s\n\n%s\nUsa la app de WhatsApp para presionar los botones", content, strings.Join(descriptions, " - "))
 	}
 	if footer := msg.GetFooterText(); footer != "" {
 		content = fmt.Sprintf("%s\n\n%s", content, footer)

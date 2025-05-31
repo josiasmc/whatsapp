@@ -49,7 +49,7 @@ func (mc *MessageConverter) convertUnknownMessage(ctx context.Context, msg *waE2
 		Type: event.EventMessage,
 		Content: &event.MessageEventContent{
 			MsgType: event.MsgNotice,
-			Body:    "Unknown message type, please view it on the WhatsApp app",
+			Body:    "Tipo de mensaje desconocido, por favor mírala en la app de WhatsApp",
 		},
 		Extra: extra,
 	}, nil
@@ -72,8 +72,8 @@ func (mc *MessageConverter) convertPlaceholderMessage(ctx context.Context, rawMs
 	}
 }
 
-const inviteMsg = `%s<hr/>This invitation to join "%s" expires at %s. Reply to this message with <code>%s accept</code> to accept the invite.`
-const inviteMsgBroken = `%s<hr/>This invitation to join "%s" expires at %s. However, the invite message is broken or unsupported and cannot be accepted.`
+const inviteMsg = `%s<hr/>Esta invitación para unirse a "%s" expira en %s. Responda a este mensaje con <code>%s accept</code> para aceptar la invitación.`
+const inviteMsgBroken = `%s<hr/>Esta invitación para unirse a "%s" expira en %s. Sin embargo, el mensaje de invitación está roto o no es soportado, y no se puede aceptar la invitación.`
 const GroupInviteMetaField = "fi.mau.whatsapp.invite"
 
 func (mc *MessageConverter) convertGroupInviteMessage(ctx context.Context, info *types.MessageInfo, msg *waE2E.GroupInviteMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
@@ -149,21 +149,21 @@ const eventMessageTemplate = `
 {{- end -}}
 {{- if .StartTime -}}
 	<p>
-		Start time: <time datetime="{{ .StartTimeISO }}">{{ .StartTime }}</time>
+		Inicio: <time datetime="{{ .StartTimeISO }}">{{ .StartTime }}</time>
 		{{- if .EndTime -}}
 			<br>
-			End time: <time datetime="{{ .EndTimeISO }}">{{ .EndTime }}</time>
+			Fin: <time datetime="{{ .EndTimeISO }}">{{ .EndTime }}</time>
 		{{- end -}}
 	</p>
 {{- end -}}
 {{- if .Location -}}
-	<p>Location: {{ .Location }}</p>
+	<p>Ubicación: {{ .Location }}</p>
 {{- end -}}
 {{- if .DescriptionHTML -}}
 	<p>{{ .DescriptionHTML }}</p>
 {{- end -}}
 {{- if .JoinLink -}}
-	<p>Join link: <a href="{{ .JoinLink }}">{{ .JoinLink }}</a></p>
+	<p>Enlace para unirse: <a href="{{ .JoinLink }}">{{ .JoinLink }}</a></p>
 {{- end -}}
 `
 

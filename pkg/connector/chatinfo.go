@@ -131,12 +131,12 @@ func (wa *WhatsAppClient) applyHistoryInfo(info *bridgev2.ChatInfo, conv *wadb.C
 	}
 }
 
-const StatusBroadcastTopic = "WhatsApp status updates from your contacts"
-const StatusBroadcastName = "WhatsApp Status Broadcast"
-const BroadcastTopic = "WhatsApp broadcast list"
-const UnnamedBroadcastName = "Unnamed broadcast list"
-const PrivateChatTopic = "WhatsApp private chat"
-const BotChatTopic = "WhatsApp chat with a bot"
+const StatusBroadcastTopic = "Estados de WhatsApp de tus contactos"
+const StatusBroadcastName = "Estados de WhatsApp"
+const BroadcastTopic = "Lista de difusión de WhatsApp"
+const UnnamedBroadcastName = "Lista de difusión sin nombre"
+const PrivateChatTopic = "Chat privado de WhatsApp"
+const BotChatTopic = "Chat con el bot de WhatsApp"
 
 func (wa *WhatsAppClient) wrapDMInfo(jid types.JID) *bridgev2.ChatInfo {
 	info := &bridgev2.ChatInfo{

@@ -463,7 +463,7 @@ func (wa *WhatsAppClient) handleWACallStart(sender types.JID, id, callType strin
 }
 
 func convertCallStart(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, callType string) (*bridgev2.ConvertedMessage, error) {
-	text := "Incoming call. Use the WhatsApp app to answer."
+	text := "Llamada entrante. Usa la app de WhatsApp para contestar."
 	if callType != "" {
 		text = fmt.Sprintf("Incoming %s call. Use the WhatsApp app to answer.", callType)
 	}

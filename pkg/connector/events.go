@@ -307,8 +307,8 @@ func (evt *WAUndecryptableMessage) GetType() bridgev2.RemoteEventType {
 	return bridgev2.RemoteEventMessage
 }
 
-const UndecryptableMessageNotice = "Decrypting message from WhatsApp failed, waiting for sender to re-send... " +
-	"([learn more](https://faq.whatsapp.com/general/security-and-privacy/seeing-waiting-for-this-message-this-may-take-a-while))"
+const UndecryptableMessageNotice = "Esperando el mensaje. Esto puede demorar un poco." +
+	"([aprender más](https://faq.whatsapp.com/general/security-and-privacy/seeing-waiting-for-this-message-this-may-take-a-while))"
 
 var undecryptableMessageContent event.MessageEventContent
 
@@ -330,7 +330,7 @@ func (evt *WAUndecryptableMessage) ConvertMessage(ctx context.Context, portal *b
 	if evt.Type == events.UnavailableTypeViewOnce {
 		content = &event.MessageEventContent{
 			MsgType: event.MsgNotice,
-			Body:    "You received a view once message. For added privacy, you can only open it on the WhatsApp app.",
+			Body:    "Recibiste un mensaje de visualización única. Para mayor privacidad, solamente puedes abrirlo en la app de WhatsApp.",
 		}
 	}
 	// TODO thread root for comments
