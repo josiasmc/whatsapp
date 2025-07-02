@@ -245,13 +245,13 @@ func (mc *MessageConverter) ToMatrix(
 		isText := part.Content.MsgType.IsText()
 		if isMedia && !hasCaption {
 			part.Content.FileName = part.Content.Body
-			part.Content.Body = "↷ Forwarded"
+			part.Content.Body = "↷ Reenviado"
 			part.Content.Format = event.FormatHTML
-			part.Content.FormattedBody = "<p data-mx-forwarded-notice><em>↷ Forwarded</em></p>"
+			part.Content.FormattedBody = "<p data-mx-forwarded-notice><em>↷ Reenviado</em></p>"
 		} else if isText || isMedia {
 			part.Content.EnsureHasHTML()
-			part.Content.Body = "↷ Forwarded\n\n" + part.Content.Body
-			part.Content.FormattedBody = "<p data-mx-forwarded-notice><em>↷ Forwarded</em></p>" + part.Content.FormattedBody
+			part.Content.Body = "↷ Reenviado\n\n" + part.Content.Body
+			part.Content.FormattedBody = "<p data-mx-forwarded-notice><em>↷ Reenviado</em></p>" + part.Content.FormattedBody
 		}
 	}
 	commentTarget := waMsg.GetEncCommentMessage().GetTargetMessageKey()
