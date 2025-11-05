@@ -127,16 +127,16 @@ func (mc *MessageConverter) convertMediaMessage(
 func (mc *MessageConverter) convertAlbumMessage(ctx context.Context, msg *waE2E.AlbumMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
 	parts := make([]string, 0, 2)
 	if msg.GetExpectedImageCount() > 0 {
-		parts = append(parts, fmt.Sprintf("%d images", msg.GetExpectedImageCount()))
+		parts = append(parts, fmt.Sprintf("%d imágenes", msg.GetExpectedImageCount()))
 	}
 	if msg.GetExpectedVideoCount() > 0 {
-		parts = append(parts, fmt.Sprintf("%d videos", msg.GetExpectedVideoCount()))
+		parts = append(parts, fmt.Sprintf("%d vídeos", msg.GetExpectedVideoCount()))
 	}
 	var partDesc string
 	if len(parts) > 0 {
-		partDesc = fmt.Sprintf(" with %s", strings.Join(parts, " and "))
+		partDesc = fmt.Sprintf(" con %s", strings.Join(parts, " y "))
 	}
-	body := fmt.Sprintf("Sent an album%s:", partDesc)
+	body := fmt.Sprintf("Envió un álbum%s:", partDesc)
 	return &bridgev2.ConvertedMessagePart{
 		Type: event.EventMessage,
 		Content: &event.MessageEventContent{

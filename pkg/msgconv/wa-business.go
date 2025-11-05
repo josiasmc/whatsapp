@@ -295,7 +295,7 @@ func (mc *MessageConverter) convertListMessage(ctx context.Context, msg *waE2E.L
 			}
 		}
 	}
-	optionsMarkdown.WriteString("\nUse the WhatsApp app to respond")
+	optionsMarkdown.WriteString("\nUse la app de WhatsApp para responder")
 	rendered := format.RenderMarkdown(optionsMarkdown.String(), true, false)
 	converted.Content.Body = strings.Replace(converted.Content.Body, randomID, rendered.Body, 1)
 	converted.Content.FormattedBody = strings.Replace(converted.Content.FormattedBody, randomID, rendered.FormattedBody, 1)
