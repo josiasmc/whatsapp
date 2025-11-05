@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -28,13 +29,13 @@ import (
 
 var _ bridgev2.BackfillingNetworkAPI = (*WhatsAppClient)(nil)
 
-const historySyncDispatchWait = 30 * time.Second
-
 func (wa *WhatsAppClient) historySyncLoop(ctx context.Context) {
-	dispatchTimer := time.NewTimer(historySyncDispatchWait)
+	dispatchTimer := time.NewTimer(wa.Main.Config.HistorySync.DispatchWait)
 
+	var timerPending atomic.Bool
 	if !wa.isNewLogin && wa.UserLogin.Metadata.(*waid.UserLoginMetadata).HistorySyncPortalsNeedCreating {
 		dispatchTimer.Reset(5 * time.Second)
+		timerPending.Store(true)
 	} else {
 		dispatchTimer.Stop()
 	}
@@ -45,13 +46,28 @@ func (wa *WhatsAppClient) historySyncLoop(ctx context.Context) {
 		default:
 		}
 	}
-	wa.UserLogin.Log.Debug().Msg("Starting history sync loop")
+	wa.UserLogin.Log.Debug().Msg("Starting history sync loops")
+	// Separate loop for creating portals to ensure it doesn't block processing new history sync payloads.
+	go func() {
+		for {
+			select {
+			case <-dispatchTimer.C:
+				timerPending.Store(false)
+				wa.createPortalsFromHistorySync(ctx)
+			case <-ctx.Done():
+				wa.UserLogin.Log.Debug().Msg("Stopping portal creation history sync loop")
+				return
+			}
+		}
+	}()
 	for {
+		var resetTimer bool
 		select {
 		case evt := <-wa.historySyncs:
+			// The timer is stopped unconditionally and restarted if either handleWAHistorySync had conversations,
+			// or if the timer was previously started and hadn't reached the loop above yet.
 			dispatchTimer.Stop()
-			_ = wa.handleWAHistorySync(ctx, evt, false)
-			dispatchTimer.Reset(historySyncDispatchWait)
+			resetTimer, _ = wa.handleWAHistorySync(ctx, evt, false)
 		case <-wa.historySyncWakeup:
 			dispatchTimer.Stop()
 			notif, rowid, err := wa.Main.DB.HSNotif.GetNext(ctx, wa.UserLogin.ID)
@@ -60,19 +76,22 @@ func (wa *WhatsAppClient) historySyncLoop(ctx context.Context) {
 			} else if notif == nil {
 				wa.UserLogin.Log.Debug().Msg("No more queued history sync notifications")
 			} else {
-				wa.downloadAndSaveWAHistorySyncData(ctx, notif, rowid)
+				resetTimer = wa.downloadAndSaveWAHistorySyncData(ctx, notif, rowid)
 				// Continue waking up the loop until all queued notifications are processed
 				select {
 				case wa.historySyncWakeup <- struct{}{}:
 				default:
 				}
 			}
-			dispatchTimer.Reset(historySyncDispatchWait)
-		case <-dispatchTimer.C:
-			wa.createPortalsFromHistorySync(ctx)
 		case <-ctx.Done():
-			wa.UserLogin.Log.Debug().Msg("Stopping history sync loop")
+			wa.UserLogin.Log.Debug().Msg("Stopping main history sync loop")
 			return
+		}
+		if resetTimer {
+			timerPending.Store(true)
+		}
+		if timerPending.Load() {
+			dispatchTimer.Reset(wa.Main.Config.HistorySync.DispatchWait)
 		}
 	}
 }
@@ -94,7 +113,7 @@ func (wa *WhatsAppClient) saveWAHistorySyncNotification(ctx context.Context, evt
 	}
 }
 
-func (wa *WhatsAppClient) downloadAndSaveWAHistorySyncData(ctx context.Context, evt *waE2E.HistorySyncNotification, rowid int) {
+func (wa *WhatsAppClient) downloadAndSaveWAHistorySyncData(ctx context.Context, evt *waE2E.HistorySyncNotification, rowid int) (resetTimer bool) {
 	log := wa.UserLogin.Log.With().
 		Str("action", "download history sync").
 		Stringer("sync_type", evt.GetSyncType()).
@@ -107,25 +126,26 @@ func (wa *WhatsAppClient) downloadAndSaveWAHistorySyncData(ctx context.Context, 
 		log.Err(err).Msg("Failed to download history sync")
 		return
 	}
-	err = wa.Main.DB.DoTxn(ctx, nil, func(ctx context.Context) error {
-		err := wa.handleWAHistorySync(ctx, blob, true)
-		if err != nil {
-			return err
+	err = wa.Main.DB.DoTxn(ctx, nil, func(ctx context.Context) (innerErr error) {
+		resetTimer, innerErr = wa.handleWAHistorySync(ctx, blob, true)
+		if innerErr != nil {
+			return
 		}
-		err = wa.Main.DB.HSNotif.Delete(ctx, rowid)
-		if err != nil {
-			return fmt.Errorf("failed to delete queued history sync notification: %w", err)
+		innerErr = wa.Main.DB.HSNotif.Delete(ctx, rowid)
+		if innerErr != nil {
+			innerErr = fmt.Errorf("failed to delete queued history sync notification: %w", innerErr)
 		}
-		return nil
+		return
 	})
 	if err != nil {
 		log.Err(err).Msg("Failed to store history sync notification data")
 	}
+	return
 }
 
-func (wa *WhatsAppClient) handleWAHistorySync(ctx context.Context, evt *waHistorySync.HistorySync, stopOnError bool) error {
+func (wa *WhatsAppClient) handleWAHistorySync(ctx context.Context, evt *waHistorySync.HistorySync, stopOnError bool) (bool, error) {
 	if evt == nil || evt.SyncType == nil {
-		return nil
+		return false, nil
 	}
 	log := wa.UserLogin.Log.With().
 		Str("action", "store history sync").
@@ -137,7 +157,12 @@ func (wa *WhatsAppClient) handleWAHistorySync(ctx context.Context, evt *waHistor
 	if evt.GetGlobalSettings() != nil {
 		log.Debug().Interface("global_settings", evt.GetGlobalSettings()).Msg("Got global settings in history sync")
 	}
-	if evt.GetSyncType() == waHistorySync.HistorySync_INITIAL_STATUS_V3 || evt.GetSyncType() == waHistorySync.HistorySync_PUSH_NAME || evt.GetSyncType() == waHistorySync.HistorySync_NON_BLOCKING_DATA {
+	if evt.GetSyncType() == waHistorySync.HistorySync_INITIAL_STATUS_V3 ||
+		evt.GetSyncType() == waHistorySync.HistorySync_PUSH_NAME ||
+		evt.GetSyncType() == waHistorySync.HistorySync_NON_BLOCKING_DATA {
+		if evt.GetSyncType() == waHistorySync.HistorySync_PUSH_NAME {
+			wa.pushNamesSynced.Set()
+		}
 		log.Debug().
 			Int("conversation_count", len(evt.GetConversations())).
 			Int("pushname_count", len(evt.GetPushnames())).
@@ -145,7 +170,7 @@ func (wa *WhatsAppClient) handleWAHistorySync(ctx context.Context, evt *waHistor
 			Int("recent_sticker_count", len(evt.GetRecentStickers())).
 			Int("past_participant_count", len(evt.GetPastParticipants())).
 			Msg("Ignoring history sync")
-		return nil
+		return false, nil
 	}
 	log.Info().
 		Int("conversation_count", len(evt.GetConversations())).
@@ -238,7 +263,7 @@ func (wa *WhatsAppClient) handleWAHistorySync(ctx context.Context, evt *waHistor
 			err = wa.Main.DB.Conversation.Put(ctx, wadb.NewConversation(wa.UserLogin.ID, jid, conv, maxTime))
 			if err != nil {
 				if stopOnError {
-					return fmt.Errorf("failed to save conversation metadata for %s: %w", jid, err)
+					return false, fmt.Errorf("failed to save conversation metadata for %s: %w", jid, err)
 				}
 				log.Err(err).Msg("Failed to save conversation metadata")
 				continue
@@ -246,12 +271,19 @@ func (wa *WhatsAppClient) handleWAHistorySync(ctx context.Context, evt *waHistor
 			err = wa.Main.DB.Message.Put(ctx, wa.UserLogin.ID, jid, messages)
 			if err != nil {
 				if stopOnError {
-					return fmt.Errorf("failed to save messages in %s: %w", jid, err)
+					return false, fmt.Errorf("failed to save messages in %s: %w", jid, err)
 				}
 				log.Err(err).Msg("Failed to save messages")
 				failedToSaveTotal += len(messages)
 			} else {
 				successfullySavedTotal += len(messages)
+			}
+			err = wa.Main.Bridge.DB.BackfillTask.MarkNotDone(ctx, wa.makeWAPortalKey(jid), wa.UserLogin.ID)
+			if err != nil {
+				if stopOnError {
+					return false, fmt.Errorf("failed to mark backfill task as not done for %s: %w", jid, err)
+				}
+				log.Err(err).Msg("Failed to mark backfill task as not done")
 			}
 		}
 	}
@@ -261,7 +293,9 @@ func (wa *WhatsAppClient) handleWAHistorySync(ctx context.Context, evt *waHistor
 		Int("total_message_count", totalMessageCount).
 		Dur("duration", time.Since(start)).
 		Msg("Finished storing history sync")
-	return nil
+	resetTimer := evt.GetSyncType() == waHistorySync.HistorySync_RECENT ||
+		evt.GetSyncType() == waHistorySync.HistorySync_FULL
+	return resetTimer, nil
 }
 
 func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
@@ -270,7 +304,8 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 		Logger()
 	ctx = log.WithContext(ctx)
 	limit := wa.Main.Config.HistorySync.MaxInitialConversations
-	conversations, err := wa.Main.DB.Conversation.GetRecent(ctx, wa.UserLogin.ID, limit)
+	loginTS := wa.UserLogin.Metadata.(*waid.UserLoginMetadata).LoggedInAt
+	conversations, err := wa.Main.DB.Conversation.GetRecent(ctx, wa.UserLogin.ID, limit, loginTS)
 	if err != nil {
 		log.Err(err).Msg("Failed to get recent conversations from database")
 		return
@@ -278,6 +313,7 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 	log.Info().
 		Int("limit", limit).
 		Int("conversation_count", len(conversations)).
+		Int64("login_timestamp", loginTS.Unix()).
 		Msg("Creating portals from history sync")
 	rateLimitErrors := 0
 	var wg sync.WaitGroup
@@ -294,7 +330,7 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 		if conv.ChatJID == types.StatusBroadcastJID && !wa.Main.Config.EnableStatusBroadcast {
 			wg.Done()
 			continue
-		} else if conv.ChatJID == types.PSAJID {
+		} else if conv.ChatJID == types.PSAJID || conv.ChatJID == types.LegacyPSAJID {
 			// We don't currently support new PSAs, so don't bother backfilling them either
 			wg.Done()
 			continue
@@ -338,7 +374,7 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 			wg.Done()
 			continue
 		}
-		wa.Main.Bridge.QueueRemoteEvent(wa.UserLogin, &simplevent.ChatResync{
+		res := wa.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
 			EventMeta: simplevent.EventMeta{
 				Type: bridgev2.RemoteEventChatResync,
 				LogContext: func(c zerolog.Context) zerolog.Context {
@@ -349,7 +385,7 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 				PortalKey:    wa.makeWAPortalKey(conv.ChatJID),
 				CreatePortal: true,
 				PostHandleFunc: func(ctx context.Context, portal *bridgev2.Portal) {
-					err := wa.Main.DB.Conversation.MarkBridged(ctx, wa.UserLogin.ID, conv.ChatJID)
+					err := wa.Main.DB.Conversation.MarkSynced(ctx, wa.UserLogin.ID, conv.ChatJID, loginTS)
 					if err != nil {
 						zerolog.Ctx(ctx).Err(err).Msg("Failed to mark conversation as bridged")
 					}
@@ -359,6 +395,10 @@ func (wa *WhatsAppClient) createPortalsFromHistorySync(ctx context.Context) {
 			ChatInfo:        wrappedInfo,
 			LatestMessageTS: conv.LastMessageTimestamp,
 		})
+		if !res.Success {
+			log.Debug().Msg("Cancelling history sync portal creation loop")
+			return
+		}
 	}
 	log.Info().Int("conversation_count", len(conversations)).Msg("Finished creating portals from history sync")
 	go func() {
@@ -431,7 +471,9 @@ func (wa *WhatsAppClient) FetchMessages(ctx context.Context, params bridgev2.Fet
 		}
 		var mediaReq *wadb.MediaRequest
 		isViewOnce := evt.IsViewOnce || evt.IsViewOnceV2 || evt.IsViewOnceV2Extension
-		convertedMessages[i], mediaReq = wa.convertHistorySyncMessage(ctx, params.Portal, &evt.Info, evt.Message, isViewOnce, msg.Reactions)
+		convertedMessages[i], mediaReq = wa.convertHistorySyncMessage(
+			ctx, params.Portal, &evt.Info, evt.Message, evt.RawMessage, isViewOnce, msg.Reactions,
+		)
 		if mediaReq != nil {
 			mediaRequests = append(mediaRequests, mediaReq)
 		}
@@ -476,13 +518,18 @@ func (wa *WhatsAppClient) FetchMessages(ctx context.Context, params bridgev2.Fet
 }
 
 func (wa *WhatsAppClient) convertHistorySyncMessage(
-	ctx context.Context, portal *bridgev2.Portal, info *types.MessageInfo, msg *waE2E.Message, isViewOnce bool, reactions []*waWeb.Reaction,
+	ctx context.Context, portal *bridgev2.Portal, info *types.MessageInfo, msg, rawMsg *waE2E.Message, isViewOnce bool, reactions []*waWeb.Reaction,
 ) (*bridgev2.BackfillMessage, *wadb.MediaRequest) {
+	// New messages turn these into edits, but in backfill we only have the last version,
+	// so no need to do the edit thing. Instead, just unwrap the message.
+	if msg.GetAssociatedChildMessage().GetMessage() != nil {
+		msg = msg.GetAssociatedChildMessage().GetMessage()
+	}
 	// TODO use proper intent
 	intent := wa.Main.Bridge.Bot
 	wrapped := &bridgev2.BackfillMessage{
-		ConvertedMessage: wa.Main.MsgConv.ToMatrix(ctx, portal, wa.Client, intent, msg, info, isViewOnce, nil),
-		Sender:           wa.makeEventSender(info.Sender),
+		ConvertedMessage: wa.Main.MsgConv.ToMatrix(ctx, portal, wa.Client, intent, msg, rawMsg, info, isViewOnce, true, nil),
+		Sender:           wa.makeEventSender(ctx, info.Sender),
 		ID:               waid.MakeMessageID(info.Chat, info.Sender, info.ID),
 		TxnID:            networkid.TransactionID(waid.MakeMessageID(info.Chat, info.Sender, info.ID)),
 		Timestamp:        info.Timestamp,
@@ -505,7 +552,7 @@ func (wa *WhatsAppClient) convertHistorySyncMessage(
 		wrapped.Reactions[i] = &bridgev2.BackfillReaction{
 			TargetPart: ptr.Ptr(networkid.PartID("")),
 			Timestamp:  time.UnixMilli(reaction.GetSenderTimestampMS()),
-			Sender:     wa.makeEventSender(sender),
+			Sender:     wa.makeEventSender(ctx, sender),
 			Emoji:      reaction.GetText(),
 		}
 	}

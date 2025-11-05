@@ -73,7 +73,7 @@ func (evt *MessageInfoWrapper) GetTimestamp() time.Time {
 }
 
 func (evt *MessageInfoWrapper) GetSender() bridgev2.EventSender {
-	return evt.wa.makeEventSender(evt.Info.Sender)
+	return evt.wa.makeEventSender(evt.wa.Main.Bridge.BackgroundCtx, evt.Info.Sender)
 }
 
 func (evt *MessageInfoWrapper) GetID() networkid.MessageID {
@@ -139,7 +139,7 @@ func (evt *WAMessageEvent) PreHandle(ctx context.Context, portal *bridgev2.Porta
 	log := zerolog.Ctx(ctx).With().Str("action", "group lid migration").Logger()
 	ctx = log.WithContext(ctx)
 	meta.LIDMigrationAttempted = true
-	info, err := evt.wa.Client.GetGroupInfo(portalJID)
+	info, err := evt.wa.Client.GetGroupInfo(ctx, portalJID)
 	if err != nil {
 		log.Err(err).Msg("Failed to get group info for lid migration")
 		return
@@ -149,8 +149,15 @@ func (evt *WAMessageEvent) PreHandle(ctx context.Context, portal *bridgev2.Porta
 		return
 	}
 	log.Info().Msg("Resyncing group members as it appears to have switched to LID addressing mode")
-	portal.UpdateInfo(ctx, evt.wa.wrapGroupInfo(info), evt.wa.UserLogin, nil, time.Time{})
+	portal.UpdateInfo(ctx, evt.wa.wrapGroupInfo(ctx, info), evt.wa.UserLogin, nil, time.Time{})
 	log.Debug().Msg("Finished resyncing after LID change")
+	if evt.Info.Sender.Server == types.DefaultUserServer && evt.Info.SenderAlt.Server == types.HiddenUserServer {
+		evt.Info.Sender, evt.Info.SenderAlt = evt.Info.SenderAlt, evt.Info.Sender
+		log.Debug().
+			Stringer("new_sender", evt.Info.Sender).
+			Stringer("new_sender_alt", evt.Info.SenderAlt).
+			Msg("Overriding sender to LID after resyncing group members")
+	}
 }
 
 func (evt *WAMessageEvent) PostHandle(ctx context.Context, portal *bridgev2.Portal) {
@@ -179,7 +186,10 @@ func (evt *WAMessageEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Por
 		meta.Edits = append(meta.Edits, evt.Info.ID)
 	}
 
-	cm := evt.wa.Main.MsgConv.ToMatrix(ctx, portal, evt.wa.Client, intent, editedMsg, &evt.Info, evt.isViewOnce(), previouslyConvertedPart)
+	ctx = context.WithValue(ctx, msgconv.ContextKeyEditTargetID, evt.Message.GetProtocolMessage().GetKey().GetID())
+	cm := evt.wa.Main.MsgConv.ToMatrix(
+		ctx, portal, evt.wa.Client, intent, editedMsg, evt.MsgEvent.RawMessage, &evt.Info, evt.isViewOnce(), false, previouslyConvertedPart,
+	)
 	if evt.isUndecryptableUpsertSubEvent && isFailedMedia(cm) {
 		evt.postHandle = func() {
 			evt.wa.processFailedMedia(ctx, portal.PortalKey, evt.GetID(), cm, false)
@@ -253,8 +263,10 @@ func (evt *WAMessageEvent) HandleExisting(ctx context.Context, portal *bridgev2.
 }
 
 func (evt *WAMessageEvent) ConvertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {
-	evt.wa.EnqueuePortalResync(portal)
-	converted := evt.wa.Main.MsgConv.ToMatrix(ctx, portal, evt.wa.Client, intent, evt.Message, &evt.Info, evt.isViewOnce(), nil)
+	evt.wa.EnqueuePortalResync(portal, false)
+	converted := evt.wa.Main.MsgConv.ToMatrix(
+		ctx, portal, evt.wa.Client, intent, evt.Message, evt.MsgEvent.RawMessage, &evt.Info, evt.isViewOnce(), false, nil,
+	)
 	if isFailedMedia(converted) {
 		evt.postHandle = func() {
 			evt.wa.processFailedMedia(ctx, portal.PortalKey, evt.GetID(), converted, false)
@@ -328,9 +340,13 @@ func (evt *WAUndecryptableMessage) ConvertMessage(ctx context.Context, portal *b
 	}
 	content := &undecryptableMessageContent
 	if evt.Type == events.UnavailableTypeViewOnce {
+		body := "Recibiste un mensaje de visualización única. Para mayor privacidad, solamente puedes abrirlo en la app de WhatsApp."
+		if evt.Info.IsFromMe {
+			body = "Enviaste un mensaje de visualización única desde otro dispositivo."
+		}
 		content = &event.MessageEventContent{
 			MsgType: event.MsgNotice,
-			Body:    "Recibiste un mensaje de visualización única. Para mayor privacidad, solamente puedes abrirlo en la app de WhatsApp.",
+			Body:    body,
 		}
 	}
 	// TODO thread root for comments
@@ -386,7 +402,7 @@ func (evt *WAMediaRetry) getRealSender() types.JID {
 }
 
 func (evt *WAMediaRetry) GetSender() bridgev2.EventSender {
-	return evt.wa.makeEventSender(evt.getRealSender())
+	return evt.wa.makeEventSender(evt.wa.Main.Bridge.BackgroundCtx, evt.getRealSender())
 }
 
 func (evt *WAMediaRetry) GetTargetMessage() networkid.MessageID {

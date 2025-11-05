@@ -54,11 +54,15 @@ func (mc *MessageConverter) convertMediaMessage(
 	cachedPart *bridgev2.ConvertedMessagePart,
 ) (part *bridgev2.ConvertedMessagePart, contextInfo *waE2E.ContextInfo) {
 	if mc.DisableViewOnce && isViewOnce {
+		body := "Recibiste un mensaje de visualización única. Para mayor privacidad, solamente puedes abrirlo en la app de WhatsApp."
+		if messageInfo.IsFromMe {
+			body = "Enviaste un mensaje de visualización única desde otro dispositivo."
+		}
 		return &bridgev2.ConvertedMessagePart{
 			Type: event.EventMessage,
 			Content: &event.MessageEventContent{
 				MsgType: event.MsgNotice,
-				Body:    fmt.Sprintf("Recibiste un %s de visualización única. Para más privacidad, solamente puedes abrirlo en la app de WhatsApp.", typeName),
+				Body:    body,
 			},
 		}, nil
 	}
@@ -90,7 +94,8 @@ func (mc *MessageConverter) convertMediaMessage(
 		}
 		var err error
 		portal := getPortal(ctx)
-		preparedMedia.URL, err = portal.Bridge.Matrix.GenerateContentURI(ctx, waid.MakeMediaID(messageInfo, portal.Receiver))
+		idOverride := getEditTargetID(ctx)
+		preparedMedia.URL, err = portal.Bridge.Matrix.GenerateContentURI(ctx, waid.MakeMediaID(messageInfo, idOverride, portal.Receiver))
 		if err != nil {
 			panic(fmt.Errorf("failed to generate content URI: %w", err))
 		}
@@ -117,6 +122,28 @@ func (mc *MessageConverter) convertMediaMessage(
 		}
 	}
 	return
+}
+
+func (mc *MessageConverter) convertAlbumMessage(ctx context.Context, msg *waE2E.AlbumMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
+	parts := make([]string, 0, 2)
+	if msg.GetExpectedImageCount() > 0 {
+		parts = append(parts, fmt.Sprintf("%d images", msg.GetExpectedImageCount()))
+	}
+	if msg.GetExpectedVideoCount() > 0 {
+		parts = append(parts, fmt.Sprintf("%d videos", msg.GetExpectedVideoCount()))
+	}
+	var partDesc string
+	if len(parts) > 0 {
+		partDesc = fmt.Sprintf(" with %s", strings.Join(parts, " and "))
+	}
+	body := fmt.Sprintf("Sent an album%s:", partDesc)
+	return &bridgev2.ConvertedMessagePart{
+		Type: event.EventMessage,
+		Content: &event.MessageEventContent{
+			MsgType: event.MsgNotice,
+			Body:    body,
+		},
+	}, msg.GetContextInfo()
 }
 
 const FailedMediaField = "fi.mau.whatsapp.failed_media"
@@ -210,6 +237,8 @@ type MediaMessageWithDuration interface {
 	GetSeconds() uint32
 }
 
+const WhatsAppStickerSize = 190
+
 func prepareMediaMessage(rawMsg MediaMessage) *PreparedMedia {
 	extraInfo := map[string]any{}
 	data := &PreparedMedia{
@@ -221,6 +250,22 @@ func prepareMediaMessage(rawMsg MediaMessage) *PreparedMedia {
 			"info": extraInfo,
 		},
 	}
+	if durationMsg, ok := rawMsg.(MediaMessageWithDuration); ok {
+		data.Info.Duration = int(durationMsg.GetSeconds() * 1000)
+	}
+	if dimensionMsg, ok := rawMsg.(MediaMessageWithDimensions); ok {
+		data.Info.Width = int(dimensionMsg.GetWidth())
+		data.Info.Height = int(dimensionMsg.GetHeight())
+	}
+	if captionMsg, ok := rawMsg.(MediaMessageWithCaption); ok && captionMsg.GetCaption() != "" {
+		data.Body = captionMsg.GetCaption()
+	} else {
+		data.Body = data.FileName
+	}
+	data.Info.Size = int(rawMsg.GetFileLength())
+	data.Info.MimeType = rawMsg.GetMimetype()
+	data.ContextInfo = rawMsg.GetContextInfo()
+
 	switch msg := rawMsg.(type) {
 	case *waE2E.ImageMessage:
 		data.MsgType = event.MsgImage
@@ -245,9 +290,20 @@ func prepareMediaMessage(rawMsg MediaMessage) *PreparedMedia {
 		if msg.GetMimetype() == "application/was" && data.FileName == "sticker" {
 			data.FileName = "sticker.json"
 		}
+		if data.Info.Width == data.Info.Height {
+			data.Info.Width = WhatsAppStickerSize
+			data.Info.Height = WhatsAppStickerSize
+		} else if data.Info.Width > data.Info.Height {
+			data.Info.Height /= data.Info.Width / WhatsAppStickerSize
+			data.Info.Width = WhatsAppStickerSize
+		} else {
+			data.Info.Width /= data.Info.Height / WhatsAppStickerSize
+			data.Info.Height = WhatsAppStickerSize
+		}
 	case *waE2E.VideoMessage:
 		data.MsgType = event.MsgVideo
-		if msg.GetGifPlayback() {
+		pairedMediaType := msg.GetContextInfo().GetPairedMediaType()
+		if msg.GetGifPlayback() || pairedMediaType == waE2E.ContextInfo_MOTION_PHOTO_PARENT || pairedMediaType == waE2E.ContextInfo_MOTION_PHOTO_CHILD {
 			extraInfo["fi.mau.gif"] = true
 			extraInfo["fi.mau.loop"] = true
 			extraInfo["fi.mau.autoplay"] = true
@@ -258,22 +314,7 @@ func prepareMediaMessage(rawMsg MediaMessage) *PreparedMedia {
 	default:
 		panic(fmt.Errorf("unknown media message type %T", rawMsg))
 	}
-	if durationMsg, ok := rawMsg.(MediaMessageWithDuration); ok {
-		data.Info.Duration = int(durationMsg.GetSeconds() * 1000)
-	}
-	if dimensionMsg, ok := rawMsg.(MediaMessageWithDimensions); ok {
-		data.Info.Width = int(dimensionMsg.GetWidth())
-		data.Info.Height = int(dimensionMsg.GetHeight())
-	}
-	if captionMsg, ok := rawMsg.(MediaMessageWithCaption); ok && captionMsg.GetCaption() != "" {
-		data.Body = captionMsg.GetCaption()
-	} else {
-		data.Body = data.FileName
-	}
 
-	data.Info.Size = int(rawMsg.GetFileLength())
-	data.Info.MimeType = rawMsg.GetMimetype()
-	data.ContextInfo = rawMsg.GetContextInfo()
 	return data
 }
 

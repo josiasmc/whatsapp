@@ -2,9 +2,12 @@ package connector
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -17,6 +20,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 
+	"go.mau.fi/mautrix-whatsapp/pkg/connector/wadb"
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
 
@@ -32,17 +36,23 @@ func (wa *WhatsAppClient) EnqueueGhostResync(ghost *bridgev2.Ghost) {
 	jid := waid.ParseUserID(ghost.ID)
 	if _, exists := wa.resyncQueue[jid]; !exists {
 		wa.resyncQueue[jid] = resyncQueueItem{ghost: ghost}
+		nextResyncIn := time.Until(wa.nextResync).String()
+		if wa.nextResync.IsZero() {
+			nextResyncIn = "never"
+		}
 		wa.UserLogin.Log.Debug().
 			Stringer("jid", jid).
-			Stringer("next_resync_in", time.Until(wa.nextResync)).
+			Str("next_resync_in", nextResyncIn).
 			Msg("Enqueued resync for ghost")
 	}
 	wa.resyncQueueLock.Unlock()
 }
 
-func (wa *WhatsAppClient) EnqueuePortalResync(portal *bridgev2.Portal) {
+func (wa *WhatsAppClient) EnqueuePortalResync(portal *bridgev2.Portal, allowDM bool) {
 	jid, _ := waid.ParsePortalID(portal.ID)
-	if jid.Server != types.GroupServer || portal.Metadata.(*waid.PortalMetadata).LastSync.Add(ResyncMinInterval).After(time.Now()) {
+	if portal.Metadata.(*waid.PortalMetadata).LastSync.Add(ResyncMinInterval).After(time.Now()) {
+		return
+	} else if !allowDM && jid.Server != types.GroupServer {
 		return
 	}
 	wa.resyncQueueLock.Lock()
@@ -124,7 +134,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 		}
 	}
 	for _, portal := range portals {
-		wa.Main.Bridge.QueueRemoteEvent(wa.UserLogin, &simplevent.ChatResync{
+		wa.UserLogin.QueueRemoteEvent(&simplevent.ChatResync{
 			EventMeta: simplevent.EventMeta{
 				Type: bridgev2.RemoteEventChatResync,
 				LogContext: func(c zerolog.Context) zerolog.Context {
@@ -139,7 +149,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 		return
 	}
 	log.Debug().Array("jids", exzerolog.ArrayOfStringers(ghostJIDs)).Msg("Doing background sync for users")
-	infos, err := wa.Client.GetUserInfo(ghostJIDs)
+	infos, err := wa.Client.GetUserInfo(ctx, ghostJIDs)
 	if err != nil {
 		log.Err(err).Msg("Failed to get user info for background sync")
 		return
@@ -157,6 +167,7 @@ func (wa *WhatsAppClient) doGhostResync(ctx context.Context, queue map[types.JID
 			continue
 		}
 		ghost.UpdateInfo(ctx, userInfo)
+		wa.syncAltGhostWithInfo(ctx, jid, userInfo)
 	}
 }
 
@@ -180,30 +191,33 @@ func (wa *WhatsAppClient) getUserInfo(ctx context.Context, jid types.JID, fetchA
 func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, contact types.ContactInfo, getAvatar bool) *bridgev2.UserInfo {
 	if jid == types.MetaAIJID && contact.PushName == jid.User {
 		contact.PushName = "Meta AI"
-	} else if jid == types.PSAJID {
+	} else if jid == types.LegacyPSAJID || jid == types.PSAJID {
 		contact.PushName = "WhatsApp"
 	}
-	var phone string
-	if jid.Server == types.DefaultUserServer {
-		phone = "+" + jid.User
-	} else if jid.Server == types.HiddenUserServer {
-		pnJID, err := wa.GetStore().LIDs.GetPNForLID(ctx, jid)
+	var altJID types.JID
+	if jid.Server == types.DefaultUserServer || jid.Server == types.HiddenUserServer {
+		var err error
+		altJID, err = wa.GetStore().GetAltJID(ctx, jid)
 		if err != nil {
-			zerolog.Ctx(ctx).Err(err).Stringer("lid", jid).Msg("Failed to get PN for LID")
-		} else if !pnJID.IsEmpty() {
-			phone = "+" + pnJID.User
-			extraContact, err := wa.GetStore().Contacts.GetContact(ctx, pnJID)
+			zerolog.Ctx(ctx).Err(err).Stringer("source_jid", jid).Msg("Failed to get alt JID")
+		} else if altJID.IsEmpty() {
+			zerolog.Ctx(ctx).Debug().Stringer("source_jid", jid).Msg("Alternate JID not found in contactToUserInfo")
+		} else {
+			extraContact, err := wa.GetStore().Contacts.GetContact(ctx, altJID)
 			if err != nil {
 				zerolog.Ctx(ctx).Err(err).
-					Stringer("lid", jid).
-					Stringer("pn_jid", pnJID).
-					Msg("Failed to get contact info from PN")
+					Stringer("source_jid", jid).
+					Stringer("alt_jid", altJID).
+					Msg("Failed to get contact info from alternate JID")
 			} else {
-				if contact.FirstName == "" {
-					contact.FirstName = extraContact.FirstName
-				}
-				if contact.FullName == "" {
-					contact.FullName = extraContact.FullName
+				// Phone contact info should only be stored for phone number JIDs
+				if altJID.Server == types.DefaultUserServer {
+					if contact.FirstName == "" {
+						contact.FirstName = extraContact.FirstName
+					}
+					if contact.FullName == "" {
+						contact.FullName = extraContact.FullName
+					}
 				}
 				if contact.PushName == "" {
 					contact.PushName = extraContact.PushName
@@ -211,8 +225,36 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 				if contact.BusinessName == "" {
 					contact.BusinessName = extraContact.BusinessName
 				}
+				if contact.PushName != "" && extraContact.PushName != "" && contact.PushName != extraContact.PushName {
+					zerolog.Ctx(ctx).Debug().
+						Stringer("source_jid", jid).
+						Stringer("alt_jid", altJID).
+						Str("source_push_name", contact.PushName).
+						Str("alt_push_name", extraContact.PushName).
+						Msg("Conflicting push names between JIDs")
+					if altJID.Server == types.DefaultUserServer {
+						contact.PushName = extraContact.PushName
+					}
+				}
+				if contact.BusinessName != "" && extraContact.BusinessName != "" && contact.BusinessName != extraContact.BusinessName {
+					zerolog.Ctx(ctx).Debug().
+						Stringer("source_jid", jid).
+						Stringer("alt_jid", altJID).
+						Str("source_push_name", contact.BusinessName).
+						Str("alt_push_name", extraContact.BusinessName).
+						Msg("Conflicting business names between JIDs")
+					if altJID.Server == types.DefaultUserServer {
+						contact.BusinessName = extraContact.BusinessName
+					}
+				}
 			}
 		}
+	}
+	var phone string
+	if jid.Server == types.DefaultUserServer {
+		phone = "+" + jid.User
+	} else if altJID.Server == types.DefaultUserServer {
+		phone = "+" + altJID.User
 	}
 	ui := &bridgev2.UserInfo{
 		Name:         ptr.Ptr(wa.Main.Config.FormatDisplayname(jid, phone, contact)),
@@ -232,9 +274,54 @@ func (wa *WhatsAppClient) contactToUserInfo(ctx context.Context, jid types.JID, 
 
 func updateGhostLastSyncAt(_ context.Context, ghost *bridgev2.Ghost) bool {
 	meta := ghost.Metadata.(*waid.GhostMetadata)
-	forceSave := time.Since(meta.LastSync.Time) > 24*time.Hour
+	forceSave := ResyncMinInterval < 24*time.Hour || time.Since(meta.LastSync.Time) > 24*time.Hour
 	meta.LastSync = jsontime.UnixNow()
 	return forceSave
+}
+
+var expiryRegex = regexp.MustCompile("oe=([0-9A-Fa-f]+)")
+
+func avatarInfoToCacheEntry(ctx context.Context, jid types.JID, avatar *types.ProfilePictureInfo) *wadb.AvatarCacheEntry {
+	expiry := time.Now().Add(24 * time.Hour)
+	match := expiryRegex.FindStringSubmatch(avatar.DirectPath)
+	if len(match) == 2 {
+		expiryUnix, err := strconv.ParseInt(match[1], 16, 64)
+		if err == nil {
+			expiry = time.Unix(expiryUnix, 0)
+		} else {
+			zerolog.Ctx(ctx).Warn().Err(err).
+				Strs("match", match).
+				Msg("Failed to parse expiry from avatar direct path")
+		}
+	}
+	return &wadb.AvatarCacheEntry{
+		EntityJID:  jid,
+		AvatarID:   avatar.ID,
+		DirectPath: avatar.DirectPath,
+		Expiry:     jsontime.U(expiry),
+		Gone:       false,
+	}
+}
+
+func (wa *WhatsAppClient) makeDirectMediaAvatar(ctx context.Context, jid types.JID, avatar *types.ProfilePictureInfo, community bool) (*bridgev2.Avatar, error) {
+	mxc, err := wa.Main.Bridge.Matrix.GenerateContentURI(ctx, waid.MakeAvatarMediaID(jid, avatar.ID, wa.UserLogin.ID, community))
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate MXC URI: %w", err)
+	}
+	cacheEntry := avatarInfoToCacheEntry(ctx, jid, avatar)
+	err = wa.Main.DB.AvatarCache.Put(ctx, cacheEntry)
+	if err != nil {
+		return nil, fmt.Errorf("failed to cache avatar info: %w", err)
+	}
+	hash := sha256.Sum256([]byte(avatar.ID))
+	if len(avatar.Hash) == 32 {
+		hash = [32]byte(avatar.Hash)
+	}
+	return &bridgev2.Avatar{
+		ID:   networkid.AvatarID(avatar.ID),
+		MXC:  mxc,
+		Hash: hash,
+	}, nil
 }
 
 func (wa *WhatsAppClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.Ghost) bool {
@@ -244,7 +331,7 @@ func (wa *WhatsAppClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.
 		existingID = ""
 	}
 	var wrappedAvatar *bridgev2.Avatar
-	avatar, err := wa.Client.GetProfilePictureInfo(jid, &whatsmeow.GetProfilePictureParams{ExistingID: existingID})
+	avatar, err := wa.Client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{ExistingID: existingID})
 	if errors.Is(err, whatsmeow.ErrProfilePictureNotSet) {
 		wrappedAvatar = &bridgev2.Avatar{
 			ID:     "remove",
@@ -260,6 +347,12 @@ func (wa *WhatsAppClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.
 		return false
 	} else if avatar == nil {
 		return false
+	} else if wa.Main.MsgConv.DirectMedia {
+		wrappedAvatar, err = wa.makeDirectMediaAvatar(ctx, jid, avatar, false)
+		if err != nil {
+			zerolog.Ctx(ctx).Err(err).Msg("Failed to prepare direct media avatar")
+			return false
+		}
 	} else {
 		wrappedAvatar = &bridgev2.Avatar{
 			ID: networkid.AvatarID(avatar.ID),
@@ -271,21 +364,73 @@ func (wa *WhatsAppClient) fetchGhostAvatar(ctx context.Context, ghost *bridgev2.
 	return ghost.UpdateAvatar(ctx, wrappedAvatar)
 }
 
-func (wa *WhatsAppClient) resyncContacts(forceAvatarSync bool) {
+func (wa *WhatsAppClient) resyncContacts(forceAvatarSync, automatic bool) {
 	log := wa.UserLogin.Log.With().Str("action", "resync contacts").Logger()
-	ctx := log.WithContext(context.Background())
-	contacts, err := wa.GetStore().Contacts.GetAllContacts(ctx)
+	ctx := log.WithContext(wa.Main.Bridge.BackgroundCtx)
+	if automatic && wa.isNewLogin {
+		log.Debug().Msg("Waiting for push name history sync before resyncing contacts")
+		timeoutCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		_ = wa.pushNamesSynced.Wait(timeoutCtx)
+		cancel()
+		if ctx.Err() != nil {
+			return
+		}
+	}
+	contactStore := wa.GetStore().Contacts
+	contacts, err := contactStore.GetAllContacts(ctx)
 	if err != nil {
 		log.Err(err).Msg("Failed to get cached contacts")
 		return
 	}
 	log.Info().Int("contact_count", len(contacts)).Msg("Resyncing displaynames with contact info")
-	for jid, contact := range contacts {
+	for jid := range contacts {
+		if ctx.Err() != nil {
+			return
+		}
 		ghost, err := wa.Main.Bridge.GetGhostByID(ctx, waid.MakeUserID(jid))
 		if err != nil {
-			log.Err(err).Msg("Failed to get ghost")
-		} else if ghost != nil {
-			ghost.UpdateInfo(ctx, wa.contactToUserInfo(ctx, jid, contact, forceAvatarSync || ghost.AvatarID == ""))
+			log.Err(err).Stringer("jid", jid).Msg("Failed to get ghost")
+			// Refetch contact info from the store to reduce the risk of races.
+			// This should always hit the cache.
+		} else if contact, err := contactStore.GetContact(ctx, jid); err != nil {
+			log.Err(err).Stringer("jid", jid).Msg("Failed to get contact info")
+		} else {
+			userInfo := wa.contactToUserInfo(ctx, jid, contact, forceAvatarSync || ghost.AvatarID == "")
+			ghost.UpdateInfo(ctx, userInfo)
+			wa.syncAltGhostWithInfo(ctx, jid, userInfo)
 		}
 	}
+}
+
+func (wa *WhatsAppClient) syncAltGhostWithInfo(ctx context.Context, jid types.JID, info *bridgev2.UserInfo) {
+	log := zerolog.Ctx(ctx)
+	var altJID types.JID
+	var err error
+	if jid.Server == types.HiddenUserServer {
+		altJID, err = wa.GetStore().LIDs.GetPNForLID(ctx, jid)
+	} else if jid.Server == types.DefaultUserServer {
+		altJID, err = wa.GetStore().LIDs.GetLIDForPN(ctx, jid)
+	}
+	if err != nil {
+		log.Warn().Err(err).
+			Stringer("jid", jid).
+			Msg("Failed to get alternate JID for syncing user info")
+		return
+	} else if altJID.IsEmpty() {
+		return
+	}
+	ghost, err := wa.Main.Bridge.GetGhostByID(ctx, waid.MakeUserID(altJID))
+	if err != nil {
+		log.Err(err).
+			Stringer("alternate_jid", altJID).
+			Stringer("jid", jid).
+			Msg("Failed to get ghost for alternate JID")
+		return
+	}
+	ghost.UpdateInfo(ctx, info)
+	log.Debug().
+		Stringer("jid", jid).
+		Stringer("alternate_jid", altJID).
+		Msg("Synced alternate ghost with info")
+	go wa.syncRemoteProfile(ctx, ghost)
 }

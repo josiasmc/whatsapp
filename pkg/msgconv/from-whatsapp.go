@@ -33,7 +33,6 @@ import (
 	"go.mau.fi/whatsmeow/types"
 	_ "golang.org/x/image/webp"
 	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -47,6 +46,7 @@ const (
 	contextKeyClient contextKey = iota
 	contextKeyIntent
 	contextKeyPortal
+	ContextKeyEditTargetID
 )
 
 func getClient(ctx context.Context) *whatsmeow.Client {
@@ -59,6 +59,11 @@ func getIntent(ctx context.Context) bridgev2.MatrixAPI {
 
 func getPortal(ctx context.Context) *bridgev2.Portal {
 	return ctx.Value(contextKeyPortal).(*bridgev2.Portal)
+}
+
+func getEditTargetID(ctx context.Context) types.MessageID {
+	editID, _ := ctx.Value(ContextKeyEditTargetID).(types.MessageID)
+	return editID
 }
 
 func (mc *MessageConverter) getBasicUserInfo(ctx context.Context, user types.JID) (id.UserID, string, error) {
@@ -83,8 +88,9 @@ func (mc *MessageConverter) getBasicUserInfo(ctx context.Context, user types.JID
 		}
 	}
 	if !pnJID.IsEmpty() {
+		portal := getPortal(ctx)
 		login := mc.Bridge.GetCachedUserLoginByID(waid.MakeUserLoginID(pnJID))
-		if login != nil {
+		if login != nil && (portal.Receiver == "" || portal.Receiver == login.ID) {
 			return login.UserMXID, ghost.Name, nil
 		}
 	}
@@ -128,8 +134,10 @@ func (mc *MessageConverter) ToMatrix(
 	client *whatsmeow.Client,
 	intent bridgev2.MatrixAPI,
 	waMsg *waE2E.Message,
+	rawWaMsg *waE2E.Message,
 	info *types.MessageInfo,
 	isViewOnce bool,
+	isBackfill bool,
 	previouslyConvertedPart *bridgev2.ConvertedMessagePart,
 ) *bridgev2.ConvertedMessage {
 	ctx = context.WithValue(ctx, contextKeyClient, client)
@@ -168,6 +176,12 @@ func (mc *MessageConverter) ToMatrix(
 		part, contextInfo = mc.convertPollUpdateMessage(ctx, info, waMsg.PollUpdateMessage)
 	case waMsg.EventMessage != nil:
 		part, contextInfo = mc.convertEventMessage(ctx, waMsg.EventMessage)
+	case waMsg.PinInChatMessage != nil:
+		part, contextInfo = mc.convertPinInChatMessage(ctx, waMsg.PinInChatMessage)
+	case waMsg.KeepInChatMessage != nil:
+		part, contextInfo = mc.convertKeepInChatMessage(ctx, waMsg.KeepInChatMessage)
+	case waMsg.RichResponseMessage != nil:
+		part, contextInfo = mc.convertRichResponseMessage(ctx, waMsg.RichResponseMessage)
 	case waMsg.ImageMessage != nil:
 		part, contextInfo = mc.convertMediaMessage(ctx, waMsg.ImageMessage, "photo", info, isViewOnce, previouslyConvertedPart)
 	case waMsg.StickerMessage != nil:
@@ -184,6 +198,8 @@ func (mc *MessageConverter) ToMatrix(
 		part, contextInfo = mc.convertMediaMessage(ctx, waMsg.AudioMessage, typeName, info, isViewOnce, previouslyConvertedPart)
 	case waMsg.DocumentMessage != nil:
 		part, contextInfo = mc.convertMediaMessage(ctx, waMsg.DocumentMessage, "file attachment", info, isViewOnce, previouslyConvertedPart)
+	case waMsg.AlbumMessage != nil:
+		part, contextInfo = mc.convertAlbumMessage(ctx, waMsg.AlbumMessage)
 	case waMsg.LocationMessage != nil:
 		part, contextInfo = mc.convertLocationMessage(ctx, waMsg.LocationMessage)
 	case waMsg.LiveLocationMessage != nil:
@@ -197,11 +213,11 @@ func (mc *MessageConverter) ToMatrix(
 	case waMsg.GroupInviteMessage != nil:
 		part, contextInfo = mc.convertGroupInviteMessage(ctx, info, waMsg.GroupInviteMessage)
 	case waMsg.ProtocolMessage != nil && waMsg.ProtocolMessage.GetType() == waE2E.ProtocolMessage_EPHEMERAL_SETTING:
-		part, contextInfo = mc.convertEphemeralSettingMessage(ctx, waMsg.ProtocolMessage)
+		part, contextInfo = mc.convertEphemeralSettingMessage(ctx, waMsg.ProtocolMessage, info.Timestamp, isBackfill)
 	case waMsg.EncCommentMessage != nil:
 		part = failedCommentPart
 	default:
-		part, contextInfo = mc.convertUnknownMessage(ctx, waMsg)
+		part, contextInfo = mc.convertUnknownMessage(ctx, rawWaMsg)
 	}
 
 	part.Content.Mentions = &event.Mentions{}
@@ -224,10 +240,16 @@ func (mc *MessageConverter) ToMatrix(
 	}
 	if contextInfo.GetExpiration() > 0 {
 		cm.Disappear.Timer = time.Duration(contextInfo.GetExpiration()) * time.Second
-		cm.Disappear.Type = database.DisappearingTypeAfterRead
-		if portal.Disappear.Timer != cm.Disappear.Timer && portal.Metadata.(*waid.PortalMetadata).DisappearingTimerSetAt < contextInfo.GetEphemeralSettingTimestamp() {
-			portal.UpdateDisappearingSetting(ctx, cm.Disappear, intent, info.Timestamp, true, true)
-		}
+		cm.Disappear.Type = event.DisappearingTypeAfterSend
+	}
+	if portal.Disappear.Timer != cm.Disappear.Timer && portal.Metadata.(*waid.PortalMetadata).DisappearingTimerSetAt < contextInfo.GetEphemeralSettingTimestamp() {
+		portal.UpdateDisappearingSetting(ctx, cm.Disappear, bridgev2.UpdateDisappearingSettingOpts{
+			Sender:     intent,
+			Timestamp:  info.Timestamp,
+			Implicit:   true,
+			Save:       true,
+			SendNotice: true,
+		})
 	}
 	if contextInfo.GetStanzaID() != "" {
 		pcp, _ := types.ParseJID(contextInfo.GetParticipant())

@@ -8,6 +8,7 @@ import (
 	"go.mau.fi/util/jsontime"
 	"go.mau.fi/util/ptr"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
@@ -16,6 +17,33 @@ import (
 var WhatsAppGeneralCaps = &bridgev2.NetworkGeneralCapabilities{
 	DisappearingMessages: true,
 	AggressiveUpdateInfo: true,
+	ImplicitReadReceipts: true,
+	Provisioning: bridgev2.ProvisioningCapabilities{
+		ResolveIdentifier: bridgev2.ResolveIdentifierCapabilities{
+			CreateDM:    true,
+			LookupPhone: true,
+			ContactList: true,
+		},
+		GroupCreation: map[string]bridgev2.GroupTypeCapabilities{
+			"group": {
+				TypeDescription: "a group chat",
+
+				Name:         bridgev2.GroupFieldCapability{Allowed: true, MaxLength: 100},
+				Disappear:    bridgev2.GroupFieldCapability{Allowed: true, DisappearSettings: waDisappearingCap},
+				Participants: bridgev2.GroupFieldCapability{Allowed: true, Required: true, MinLength: 1},
+				Parent:       bridgev2.GroupFieldCapability{Allowed: true},
+			},
+		},
+	},
+}
+
+var waDisappearingCap = &event.DisappearingTimerCapability{
+	Types: []event.DisappearingType{event.DisappearingTypeAfterSend},
+	Timers: []jsontime.Milliseconds{
+		jsontime.MS(24 * time.Hour),      // 24 hours
+		jsontime.MS(7 * 24 * time.Hour),  // 7 days
+		jsontime.MS(90 * 24 * time.Hour), // 90 days
+	},
 }
 
 func (wa *WhatsAppConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
@@ -23,7 +51,7 @@ func (wa *WhatsAppConnector) GetCapabilities() *bridgev2.NetworkGeneralCapabilit
 }
 
 func (wa *WhatsAppConnector) GetBridgeInfoVersion() (info, caps int) {
-	return 1, 1
+	return 1, 6
 }
 
 const WAMaxFileSize = 2000 * 1024 * 1024
@@ -38,7 +66,7 @@ func supportedIfFFmpeg() event.CapabilitySupportLevel {
 }
 
 func capID() string {
-	base := "fi.mau.whatsapp.capabilities.2025_01_10"
+	base := "fi.mau.whatsapp.capabilities.2025_10_27"
 	if ffmpeg.Supported() {
 		return base + "+ffmpeg"
 	}
@@ -66,8 +94,8 @@ var whatsappCaps = &event.RoomFeatures{
 	File: map[event.CapabilityMsgType]*event.FileFeatures{
 		event.MsgImage: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
-				"image/png":  event.CapLevelFullySupported,
 				"image/jpeg": event.CapLevelFullySupported,
+				"image/png":  event.CapLevelPartialSupport,
 				"image/webp": event.CapLevelPartialSupport,
 				"image/gif":  supportedIfFFmpeg(),
 			},
@@ -116,9 +144,10 @@ var whatsappCaps = &event.RoomFeatures{
 		},
 		event.MsgVideo: {
 			MimeTypes: map[string]event.CapabilitySupportLevel{
-				"video/mp4":  event.CapLevelFullySupported,
-				"video/3gpp": event.CapLevelFullySupported,
-				"video/webm": supportedIfFFmpeg(),
+				"video/mp4":       event.CapLevelFullySupported,
+				"video/3gpp":      event.CapLevelFullySupported,
+				"video/webm":      supportedIfFFmpeg(),
+				"video/quicktime": supportedIfFFmpeg(),
 			},
 			Caption:          event.CapLevelFullySupported,
 			MaxCaptionLength: MaxTextLength,
@@ -132,6 +161,17 @@ var whatsappCaps = &event.RoomFeatures{
 			MaxCaptionLength: MaxTextLength,
 			MaxSize:          WAMaxFileSize,
 		},
+	},
+	State: event.StateFeatureMap{
+		event.StateRoomName.Type:                {Level: event.CapLevelFullySupported},
+		event.StateRoomAvatar.Type:              {Level: event.CapLevelFullySupported},
+		event.StateTopic.Type:                   {Level: event.CapLevelFullySupported},
+		event.StateBeeperDisappearingTimer.Type: {Level: event.CapLevelFullySupported},
+	},
+	MemberActions: event.MemberFeatureMap{
+		event.MemberActionInvite: event.CapLevelFullySupported,
+		event.MemberActionKick:   event.CapLevelFullySupported,
+		event.MemberActionLeave:  event.CapLevelFullySupported,
 	},
 	MaxTextLength:       MaxTextLength,
 	LocationMessage:     event.CapLevelFullySupported,
@@ -147,11 +187,20 @@ var whatsappCaps = &event.RoomFeatures{
 	ReactionCount:       1,
 	ReadReceipts:        true,
 	TypingNotifications: true,
+	DisappearingTimer:   waDisappearingCap,
+	DeleteChat:          true,
 }
 
+var whatsappDMCaps *event.RoomFeatures
 var whatsappCAGCaps *event.RoomFeatures
 
 func init() {
+	whatsappDMCaps = ptr.Clone(whatsappCaps)
+	whatsappDMCaps.ID = capID() + "+dm"
+	whatsappDMCaps.State = event.StateFeatureMap{
+		event.StateBeeperDisappearingTimer.Type: {Level: event.CapLevelFullySupported},
+	}
+	whatsappDMCaps.MemberActions = nil
 	whatsappCAGCaps = ptr.Clone(whatsappCaps)
 	whatsappCAGCaps.ID = capID() + "+cag"
 	whatsappCAGCaps.Reply = event.CapLevelUnsupported
@@ -161,6 +210,8 @@ func init() {
 func (wa *WhatsAppClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
 	if portal.Metadata.(*waid.PortalMetadata).CommunityAnnouncementGroup {
 		return whatsappCAGCaps
+	} else if portal.RoomType == database.RoomTypeDM {
+		return whatsappDMCaps
 	}
 	return whatsappCaps
 }

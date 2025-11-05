@@ -19,15 +19,17 @@ package msgconv
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
-	"image/png"
+	"image/jpeg"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/ffmpeg"
@@ -37,7 +39,6 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
-	"golang.org/x/image/webp"
 	"google.golang.org/protobuf/proto"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -48,7 +49,7 @@ import (
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
 
-func (mc *MessageConverter) generateContextInfo(ctx context.Context, replyTo *database.Message, portal *bridgev2.Portal) *waE2E.ContextInfo {
+func (mc *MessageConverter) generateContextInfo(ctx context.Context, replyTo *database.Message, portal *bridgev2.Portal, perMessageTimer *event.BeeperDisappearingTimer) *waE2E.ContextInfo {
 	contextInfo := &waE2E.ContextInfo{}
 	if replyTo != nil {
 		msgID, err := waid.ParseMessageID(replyTo.ID)
@@ -63,12 +64,18 @@ func (mc *MessageConverter) generateContextInfo(ctx context.Context, replyTo *da
 				Msg("Failed to parse reply to message ID")
 		}
 	}
-	if portal.Disappear.Timer > 0 {
-		contextInfo.Expiration = ptr.Ptr(uint32(portal.Disappear.Timer.Seconds()))
-		setAt := portal.Metadata.(*waid.PortalMetadata).DisappearingTimerSetAt
-		if setAt > 0 {
-			contextInfo.EphemeralSettingTimestamp = ptr.Ptr(setAt)
-		}
+	var timer time.Duration
+	if perMessageTimer != nil {
+		timer = perMessageTimer.Timer.Duration
+	} else {
+		timer = portal.Disappear.Timer
+	}
+	if timer > 0 {
+		contextInfo.Expiration = ptr.Ptr(uint32(timer.Seconds()))
+	}
+	setAt := portal.Metadata.(*waid.PortalMetadata).DisappearingTimerSetAt
+	if setAt > 0 && contextInfo.Expiration != nil {
+		contextInfo.EphemeralSettingTimestamp = ptr.Ptr(setAt)
 	}
 	return contextInfo
 }
@@ -89,11 +96,15 @@ func (mc *MessageConverter) ToWhatsApp(
 	}
 
 	message := &waE2E.Message{}
-	contextInfo := mc.generateContextInfo(ctx, replyTo, portal)
+	contextInfo := mc.generateContextInfo(ctx, replyTo, portal, content.BeeperDisappearingTimer)
 
 	switch content.MsgType {
 	case event.MsgText, event.MsgNotice, event.MsgEmote:
-		message = mc.constructTextMessage(ctx, content, contextInfo)
+		var err error
+		message, err = mc.constructTextMessage(ctx, content, evt.Content.Raw, contextInfo)
+		if err != nil {
+			return nil, nil, err
+		}
 	case event.MessageType(event.EventSticker.Type), event.MsgImage, event.MsgVideo, event.MsgAudio, event.MsgFile:
 		uploaded, thumbnail, mime, err := mc.reuploadFileToWhatsApp(ctx, content)
 		if err != nil {
@@ -249,9 +260,14 @@ func (mc *MessageConverter) constructMediaMessage(
 			},
 		}
 	case event.MsgFile:
+		fileName := content.FileName
+		if fileName == "" {
+			fileName = content.Body
+		}
+
 		msg := &waE2E.Message{
 			DocumentMessage: &waE2E.DocumentMessage{
-				FileName: proto.String(content.FileName),
+				FileName: proto.String(fileName),
 
 				Caption:       proto.String(caption),
 				JPEGThumbnail: thumbnail,
@@ -293,7 +309,16 @@ func (mc *MessageConverter) parseText(ctx context.Context, content *event.Messag
 	return
 }
 
-func (mc *MessageConverter) constructTextMessage(ctx context.Context, content *event.MessageEventContent, contextInfo *waE2E.ContextInfo) *waE2E.Message {
+func (mc *MessageConverter) constructTextMessage(
+	ctx context.Context,
+	content *event.MessageEventContent,
+	raw map[string]any,
+	contextInfo *waE2E.ContextInfo,
+) (*waE2E.Message, error) {
+	groupInvite, ok := raw[GroupInviteMetaField].(map[string]any)
+	if ok {
+		return mc.constructGroupInviteMessage(ctx, content, groupInvite, contextInfo)
+	}
 	text, mentions := mc.parseText(ctx, content)
 	if len(mentions) > 0 {
 		contextInfo.MentionedJID = mentions
@@ -304,7 +329,44 @@ func (mc *MessageConverter) constructTextMessage(ctx context.Context, content *e
 	}
 	mc.convertURLPreviewToWhatsApp(ctx, content, etm)
 
-	return &waE2E.Message{ExtendedTextMessage: etm}
+	return &waE2E.Message{ExtendedTextMessage: etm}, nil
+}
+
+func (mc *MessageConverter) constructGroupInviteMessage(
+	ctx context.Context,
+	content *event.MessageEventContent,
+	inviteMeta map[string]any,
+	contextInfo *waE2E.ContextInfo,
+) (*waE2E.Message, error) {
+	payload, err := json.Marshal(inviteMeta)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal invite meta: %w", err)
+	}
+	var parsedInviteMeta waid.GroupInviteMeta
+	err = json.Unmarshal(payload, &parsedInviteMeta)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse invite meta: %w", err)
+	}
+	text, mentions := mc.parseText(ctx, content)
+	if len(mentions) > 0 {
+		contextInfo.MentionedJID = mentions
+	}
+	groupType := waE2E.GroupInviteMessage_DEFAULT
+	if parsedInviteMeta.IsParentGroup {
+		groupType = waE2E.GroupInviteMessage_PARENT
+	}
+	return &waE2E.Message{
+		GroupInviteMessage: &waE2E.GroupInviteMessage{
+			GroupJID:         proto.String(parsedInviteMeta.JID.String()),
+			InviteCode:       proto.String(parsedInviteMeta.Code),
+			InviteExpiration: proto.Int64(parsedInviteMeta.Expiration),
+			GroupName:        proto.String(parsedInviteMeta.GroupName),
+			JPEGThumbnail:    nil,
+			Caption:          proto.String(text),
+			ContextInfo:      contextInfo,
+			GroupType:        groupType.Enum(),
+		},
+	}, nil
 }
 
 func (mc *MessageConverter) convertPill(displayname, mxid, eventID string, ctx format.Context) string {
@@ -360,18 +422,18 @@ func (img *PaddedImage) At(x, y int) color.Color {
 	return img.Image.At(x-img.OffsetX, y-img.OffsetY)
 }
 
-func (mc *MessageConverter) convertWebPtoPNG(webpImage []byte) ([]byte, error) {
-	webpDecoded, err := webp.Decode(bytes.NewReader(webpImage))
+func (mc *MessageConverter) convertToJPEG(webpImage []byte) ([]byte, error) {
+	decoded, _, err := image.Decode(bytes.NewReader(webpImage))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode webp image: %w", err)
 	}
 
-	var pngBuffer bytes.Buffer
-	if err = png.Encode(&pngBuffer, webpDecoded); err != nil {
+	var jpgBuffer bytes.Buffer
+	if err = jpeg.Encode(&jpgBuffer, decoded, &jpeg.Options{Quality: 80}); err != nil {
 		return nil, fmt.Errorf("failed to encode png image: %w", err)
 	}
 
-	return pngBuffer.Bytes(), nil
+	return jpgBuffer.Bytes(), nil
 }
 
 func (mc *MessageConverter) convertToWebP(img []byte) ([]byte, int, error) {
@@ -440,23 +502,28 @@ func (mc *MessageConverter) reuploadFileToWhatsApp(
 			var size int
 			data, size, err = mc.convertToWebP(data)
 			if err != nil {
-				return nil, nil, "image/webp", fmt.Errorf("%w (to webp): %w", bridgev2.ErrMediaConvertFailed, err)
+				if mime != "image/webp" {
+					return nil, nil, "image/webp", fmt.Errorf("%w (to webp): %w", bridgev2.ErrMediaConvertFailed, err)
+				} else {
+					zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to add padding to webp, continuing with original file")
+				}
+			} else {
+				content.Info.Width = size
+				content.Info.Height = size
+				mime = "image/webp"
 			}
-			content.Info.Width = size
-			content.Info.Height = size
-			mime = "image/webp"
 		}
 	case event.MsgImage:
 		mediaType = whatsmeow.MediaImage
 		switch mime {
-		case "image/jpeg", "image/png":
+		case "image/jpeg":
 			// allowed
-		case "image/webp":
-			data, err = mc.convertWebPtoPNG(data)
+		case "image/webp", "image/png":
+			data, err = mc.convertToJPEG(data)
 			if err != nil {
 				return nil, nil, "image/webp", fmt.Errorf("%w (webp to png): %s", bridgev2.ErrMediaConvertFailed, err)
 			}
-			mime = "image/png"
+			mime = "image/jpeg"
 		default:
 			return nil, nil, mime, fmt.Errorf("%w %s in image message", bridgev2.ErrUnsupportedMediaType, mime)
 		}
@@ -464,13 +531,17 @@ func (mc *MessageConverter) reuploadFileToWhatsApp(
 		switch mime {
 		case "video/mp4", "video/3gpp":
 			// allowed
-		case "video/webm":
-			data, err = ffmpeg.ConvertBytes(ctx, data, ".mp4", []string{"-f", "webm"}, []string{
+		case "video/webm", "video/quicktime":
+			sourceFormat := "webm"
+			if mime == "video/quicktime" {
+				sourceFormat = "mov"
+			}
+			data, err = ffmpeg.ConvertBytes(ctx, data, ".mp4", []string{"-f", sourceFormat}, []string{
 				"-pix_fmt", "yuv420p", "-c:v", "libx264",
 				"-filter:v", "crop='floor(in_w/2)*2:floor(in_h/2)*2'",
 			}, mime)
 			if err != nil {
-				return nil, nil, "video/webm", fmt.Errorf("%w (webm to mp4): %w", bridgev2.ErrMediaConvertFailed, err)
+				return nil, nil, mime, fmt.Errorf("%w (%s to mp4): %w", bridgev2.ErrMediaConvertFailed, sourceFormat, err)
 			}
 			mime = "video/mp4"
 		case "image/gif":

@@ -1,4 +1,4 @@
--- v0 -> v5 (compatible with v3+): Latest revision
+-- v0 -> v7 (compatible with v3+): Latest revision
 
 CREATE TABLE whatsapp_poll_option_id (
     bridge_id TEXT  NOT NULL,
@@ -26,8 +26,7 @@ CREATE TABLE whatsapp_history_sync_conversation (
     ephemeral_setting_timestamp  BIGINT,
     marked_as_unread             BOOLEAN,
     unread_count                 INTEGER,
-
-    bridged                      BOOLEAN NOT NULL DEFAULT false,
+    synced_login_ts              BIGINT,
 
     PRIMARY KEY (bridge_id, user_login_id, chat_jid),
     CONSTRAINT whatsapp_history_sync_conversation_user_login_fkey FOREIGN KEY (bridge_id, user_login_id)
@@ -89,3 +88,13 @@ CREATE TABLE whatsapp_history_sync_notification (
         REFERENCES user_login (bridge_id, id) ON UPDATE CASCADE ON DELETE CASCADE
 );
 CREATE INDEX whatsapp_history_sync_notification_login_idx ON whatsapp_history_sync_notification (bridge_id, user_login_id);
+
+CREATE TABLE whatsapp_avatar_cache (
+    entity_jid  TEXT    NOT NULL,
+    avatar_id   TEXT    NOT NULL,
+    direct_path TEXT    NOT NULL,
+    expiry      BIGINT  NOT NULL,
+    gone        BOOLEAN NOT NULL DEFAULT false,
+
+    PRIMARY KEY (entity_jid, avatar_id)
+);

@@ -29,13 +29,13 @@ import (
 
 type UserLoginMetadata struct {
 	WADeviceID      uint16        `json:"wa_device_id"`
-	WALID           string        `json:"wa_lid"`
 	PhoneLastSeen   jsontime.Unix `json:"phone_last_seen"`
 	PhoneLastPinged jsontime.Unix `json:"phone_last_pinged"`
 	Timezone        string        `json:"timezone"`
 	PushKeys        *PushKeys     `json:"push_keys,omitempty"`
 	APNSEncPubKey   []byte        `json:"apns_enc_pubkey,omitempty"`
 	APNSEncPrivKey  []byte        `json:"apns_enc_privkey,omitempty"`
+	LoggedInAt      jsontime.Unix `json:"logged_in_at,omitempty"`
 
 	HistorySyncPortalsNeedCreating bool `json:"history_sync_portals_need_creating,omitempty"`
 }
@@ -68,6 +68,9 @@ type GroupInviteMeta struct {
 	Code       string    `json:"code"`
 	Expiration int64     `json:"expiration,string"`
 	Inviter    types.JID `json:"inviter"`
+
+	GroupName     string `json:"group_name,omitempty"`
+	IsParentGroup bool   `json:"is_parent_group,omitempty"`
 }
 
 type MessageMetadata struct {
@@ -106,6 +109,7 @@ type ReactionMetadata struct {
 
 type PortalMetadata struct {
 	DisappearingTimerSetAt     int64                `json:"disappearing_timer_set_at,omitempty"`
+	TopicID                    string               `json:"topic_id,omitempty"`
 	LastSync                   jsontime.Unix        `json:"last_sync,omitempty"`
 	CommunityAnnouncementGroup bool                 `json:"is_cag,omitempty"`
 	AddressingMode             types.AddressingMode `json:"addressing_mode,omitempty"`

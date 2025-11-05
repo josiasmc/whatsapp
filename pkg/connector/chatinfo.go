@@ -32,26 +32,26 @@ func (wa *WhatsAppClient) GetChatInfo(ctx context.Context, portal *bridgev2.Port
 func (wa *WhatsAppClient) getChatInfo(ctx context.Context, portalJID types.JID, conv *wadb.Conversation) (wrapped *bridgev2.ChatInfo, err error) {
 	switch portalJID.Server {
 	case types.DefaultUserServer, types.HiddenUserServer, types.BotServer:
-		wrapped = wa.wrapDMInfo(portalJID)
+		wrapped = wa.wrapDMInfo(ctx, portalJID)
 	case types.BroadcastServer:
 		if portalJID == types.StatusBroadcastJID {
-			wrapped = wa.wrapStatusBroadcastInfo()
+			wrapped = wa.wrapStatusBroadcastInfo(ctx)
 		} else {
 			return nil, fmt.Errorf("broadcast list bridging is currently not supported")
 		}
 	case types.GroupServer:
-		info, err := wa.Client.GetGroupInfo(portalJID)
+		info, err := wa.Client.GetGroupInfo(ctx, portalJID)
 		if err != nil {
 			return nil, err
 		}
-		wrapped = wa.wrapGroupInfo(info)
+		wrapped = wa.wrapGroupInfo(ctx, info)
 		wrapped.ExtraUpdates = bridgev2.MergeExtraUpdaters(wrapped.ExtraUpdates, updatePortalLastSyncAt)
 	case types.NewsletterServer:
-		info, err := wa.Client.GetNewsletterInfo(portalJID)
+		info, err := wa.Client.GetNewsletterInfo(ctx, portalJID)
 		if err != nil {
 			return nil, err
 		}
-		wrapped = wa.wrapNewsletterInfo(info)
+		wrapped = wa.wrapNewsletterInfo(ctx, info)
 	default:
 		return nil, fmt.Errorf("unsupported server %s", portalJID.Server)
 	}
@@ -75,7 +75,7 @@ func (wa *WhatsAppClient) addExtrasToWrapped(ctx context.Context, portalJID type
 
 func updatePortalLastSyncAt(_ context.Context, portal *bridgev2.Portal) bool {
 	meta := portal.Metadata.(*waid.PortalMetadata)
-	forceSave := time.Since(meta.LastSync.Time) > 24*time.Hour
+	forceSave := ResyncMinInterval < 24*time.Hour || time.Since(meta.LastSync.Time) > 24*time.Hour
 	meta.LastSync = jsontime.UnixNow()
 	return forceSave
 }
@@ -122,7 +122,7 @@ func (wa *WhatsAppClient) applyHistoryInfo(info *bridgev2.ChatInfo, conv *wadb.C
 	}
 	if info.Disappear == nil && ptr.Val(conv.EphemeralExpiration) > 0 {
 		info.Disappear = &database.DisappearingSetting{
-			Type:  database.DisappearingTypeAfterRead,
+			Type:  event.DisappearingTypeAfterSend,
 			Timer: time.Duration(*conv.EphemeralExpiration) * time.Second,
 		}
 		if conv.EphemeralSettingTimestamp != nil {
@@ -138,7 +138,7 @@ const UnnamedBroadcastName = "Lista de difusión sin nombre"
 const PrivateChatTopic = "Chat privado de WhatsApp"
 const BotChatTopic = "Chat con el bot de WhatsApp"
 
-func (wa *WhatsAppClient) wrapDMInfo(jid types.JID) *bridgev2.ChatInfo {
+func (wa *WhatsAppClient) wrapDMInfo(ctx context.Context, jid types.JID) *bridgev2.ChatInfo {
 	info := &bridgev2.ChatInfo{
 		Topic: ptr.Ptr(PrivateChatTopic),
 		Members: &bridgev2.ChatMemberList{
@@ -146,10 +146,17 @@ func (wa *WhatsAppClient) wrapDMInfo(jid types.JID) *bridgev2.ChatInfo {
 			TotalMemberCount: 2,
 			OtherUserID:      waid.MakeUserID(jid),
 			MemberMap: map[networkid.UserID]bridgev2.ChatMember{
-				waid.MakeUserID(jid):    {EventSender: wa.makeEventSender(jid)},
-				waid.MakeUserID(wa.JID): {EventSender: wa.makeEventSender(wa.JID)},
+				waid.MakeUserID(jid):    {EventSender: wa.makeEventSender(ctx, jid)},
+				waid.MakeUserID(wa.JID): {EventSender: wa.makeEventSender(ctx, wa.JID)},
 			},
-			PowerLevels: nil,
+			PowerLevels: &bridgev2.PowerLevelOverrides{
+				Events: map[event.Type]int{
+					event.StateRoomName:                0,
+					event.StateRoomAvatar:              0,
+					event.StateTopic:                   0,
+					event.StateBeeperDisappearingTimer: 0,
+				},
+			},
 		},
 		Type: ptr.Ptr(database.RoomTypeDM),
 	}
@@ -166,7 +173,7 @@ func (wa *WhatsAppClient) wrapDMInfo(jid types.JID) *bridgev2.ChatInfo {
 	return info
 }
 
-func (wa *WhatsAppClient) wrapStatusBroadcastInfo() *bridgev2.ChatInfo {
+func (wa *WhatsAppClient) wrapStatusBroadcastInfo(ctx context.Context) *bridgev2.ChatInfo {
 	userLocal := &bridgev2.UserLocalPortalInfo{}
 	if wa.Main.Config.MuteStatusBroadcast {
 		userLocal.MutedUntil = ptr.Ptr(event.MutedForever)
@@ -180,7 +187,7 @@ func (wa *WhatsAppClient) wrapStatusBroadcastInfo() *bridgev2.ChatInfo {
 		Members: &bridgev2.ChatMemberList{
 			IsFull: false,
 			MemberMap: map[networkid.UserID]bridgev2.ChatMember{
-				waid.MakeUserID(wa.JID): {EventSender: wa.makeEventSender(wa.JID)},
+				waid.MakeUserID(wa.JID): {EventSender: wa.makeEventSender(ctx, wa.JID)},
 			},
 		},
 		Type:        ptr.Ptr(database.RoomTypeDefault),
@@ -218,7 +225,18 @@ func setAddressingMode(mode types.AddressingMode) bridgev2.ExtraUpdater[*bridgev
 	}
 }
 
-func (wa *WhatsAppClient) wrapGroupInfo(info *types.GroupInfo) *bridgev2.ChatInfo {
+func setTopicID(id, topic string) bridgev2.ExtraUpdater[*bridgev2.Portal] {
+	return func(_ context.Context, portal *bridgev2.Portal) bool {
+		meta := portal.Metadata.(*waid.PortalMetadata)
+		if meta.TopicID != id && portal.Topic == topic {
+			meta.TopicID = id
+			return true
+		}
+		return false
+	}
+}
+
+func (wa *WhatsAppClient) wrapGroupInfo(ctx context.Context, info *types.GroupInfo) *bridgev2.ChatInfo {
 	sendEventPL := defaultPL
 	if info.IsAnnounce && !info.IsDefaultSubGroup {
 		sendEventPL = adminPL
@@ -231,6 +249,7 @@ func (wa *WhatsAppClient) wrapGroupInfo(info *types.GroupInfo) *bridgev2.ChatInf
 		wa.makePortalAvatarFetcher("", types.EmptyJID, time.Time{}),
 		setDefaultSubGroupFlag(info.IsDefaultSubGroup && info.IsAnnounce),
 		setAddressingMode(info.AddressingMode),
+		setTopicID(info.TopicID, info.Topic),
 	)
 	wrapped := &bridgev2.ChatInfo{
 		Name:  ptr.Ptr(info.Name),
@@ -250,19 +269,22 @@ func (wa *WhatsAppClient) wrapGroupInfo(info *types.GroupInfo) *bridgev2.ChatInf
 					event.StateTopic:      metaChangePL,
 					event.EventReaction:   defaultPL,
 					event.EventRedaction:  defaultPL,
+
+					event.StateBeeperDisappearingTimer: metaChangePL,
 					// TODO always allow poll responses
 				},
 			},
 		},
+		ExcludeChangesFromTimeline: true,
 		Disappear: &database.DisappearingSetting{
-			Type:  database.DisappearingTypeAfterRead,
+			Type:  event.DisappearingTypeAfterSend,
 			Timer: time.Duration(info.DisappearingTimer) * time.Second,
 		},
 		ExtraUpdates: extraUpdater,
 	}
 	for _, pcp := range info.Participants {
 		member := bridgev2.ChatMember{
-			EventSender: wa.makeEventSender(pcp.JID),
+			EventSender: wa.makeEventSender(ctx, pcp.JID),
 			Membership:  event.MembershipJoin,
 		}
 		if pcp.IsSuperAdmin {
@@ -299,7 +321,7 @@ func (wa *WhatsAppClient) wrapGroupInfo(info *types.GroupInfo) *bridgev2.ChatInf
 	return wrapped
 }
 
-func (wa *WhatsAppClient) wrapGroupInfoChange(evt *events.GroupInfo) *bridgev2.ChatInfoChange {
+func (wa *WhatsAppClient) wrapGroupInfoChange(ctx context.Context, evt *events.GroupInfo) *bridgev2.ChatInfoChange {
 	var changes *bridgev2.ChatInfo
 	if evt.Name != nil || evt.Topic != nil || evt.Ephemeral != nil || evt.Unlink != nil || evt.Link != nil {
 		changes = &bridgev2.ChatInfo{}
@@ -308,10 +330,11 @@ func (wa *WhatsAppClient) wrapGroupInfoChange(evt *events.GroupInfo) *bridgev2.C
 		}
 		if evt.Topic != nil {
 			changes.Topic = &evt.Topic.Topic
+			changes.ExtraUpdates = bridgev2.MergeExtraUpdaters(changes.ExtraUpdates, setTopicID(evt.Topic.TopicID, evt.Topic.Topic))
 		}
 		if evt.Ephemeral != nil {
 			changes.Disappear = &database.DisappearingSetting{
-				Type:  database.DisappearingTypeAfterRead,
+				Type:  event.DisappearingTypeAfterSend,
 				Timer: time.Duration(evt.Ephemeral.DisappearingTimer) * time.Second,
 			}
 			if !evt.Ephemeral.IsEphemeral {
@@ -333,24 +356,24 @@ func (wa *WhatsAppClient) wrapGroupInfoChange(evt *events.GroupInfo) *bridgev2.C
 		}
 		for _, userID := range evt.Join {
 			memberChanges.MemberMap[waid.MakeUserID(userID)] = bridgev2.ChatMember{
-				EventSender: wa.makeEventSender(userID),
+				EventSender: wa.makeEventSender(ctx, userID),
 			}
 		}
 		for _, userID := range evt.Promote {
 			memberChanges.MemberMap[waid.MakeUserID(userID)] = bridgev2.ChatMember{
-				EventSender: wa.makeEventSender(userID),
+				EventSender: wa.makeEventSender(ctx, userID),
 				PowerLevel:  ptr.Ptr(adminPL),
 			}
 		}
 		for _, userID := range evt.Demote {
 			memberChanges.MemberMap[waid.MakeUserID(userID)] = bridgev2.ChatMember{
-				EventSender: wa.makeEventSender(userID),
+				EventSender: wa.makeEventSender(ctx, userID),
 				PowerLevel:  ptr.Ptr(defaultPL),
 			}
 		}
 		for _, userID := range evt.Leave {
 			memberChanges.MemberMap[waid.MakeUserID(userID)] = bridgev2.ChatMember{
-				EventSender: wa.makeEventSender(userID),
+				EventSender: wa.makeEventSender(ctx, userID),
 				Membership:  event.MembershipLeave,
 			}
 		}
@@ -396,7 +419,7 @@ func (wa *WhatsAppClient) makePortalAvatarFetcher(avatarID string, sender types.
 			existingID = ""
 		}
 		var wrappedAvatar *bridgev2.Avatar
-		avatar, err := wa.Client.GetProfilePictureInfo(jid, &whatsmeow.GetProfilePictureParams{
+		avatar, err := wa.Client.GetProfilePictureInfo(ctx, jid, &whatsmeow.GetProfilePictureParams{
 			ExistingID:  existingID,
 			IsCommunity: portal.RoomType == database.RoomTypeSpace,
 		})
@@ -415,6 +438,12 @@ func (wa *WhatsAppClient) makePortalAvatarFetcher(avatarID string, sender types.
 			return false
 		} else if avatar == nil {
 			return false
+		} else if wa.Main.MsgConv.DirectMedia {
+			wrappedAvatar, err = wa.makeDirectMediaAvatar(ctx, jid, avatar, portal.RoomType == database.RoomTypeSpace)
+			if err != nil {
+				zerolog.Ctx(ctx).Err(err).Msg("Failed to prepare direct media avatar")
+				return false
+			}
 		} else {
 			wrappedAvatar = &bridgev2.Avatar{
 				ID: networkid.AvatarID(avatar.ID),
@@ -425,18 +454,18 @@ func (wa *WhatsAppClient) makePortalAvatarFetcher(avatarID string, sender types.
 		}
 		var evtSender bridgev2.EventSender
 		if !sender.IsEmpty() {
-			evtSender = wa.makeEventSender(sender)
+			evtSender = wa.makeEventSender(ctx, sender)
 		}
 		senderIntent, ok := portal.GetIntentFor(ctx, evtSender, wa.UserLogin, bridgev2.RemoteEventChatInfoChange)
 		if !ok {
 			return false
 		}
 		//lint:ignore SA1019 TODO invent a cleaner way to fetch avatar metadata before updating?
-		return portal.Internal().UpdateAvatar(ctx, wrappedAvatar, senderIntent, ts)
+		return portal.Internal().UpdateAvatar(ctx, wrappedAvatar, senderIntent, ts, false)
 	}
 }
 
-func (wa *WhatsAppClient) wrapNewsletterInfo(info *types.NewsletterMetadata) *bridgev2.ChatInfo {
+func (wa *WhatsAppClient) wrapNewsletterInfo(ctx context.Context, info *types.NewsletterMetadata) *bridgev2.ChatInfo {
 	ownPowerLevel := defaultPL
 	var mutedUntil *time.Time
 	if info.ViewerMeta != nil {
@@ -454,6 +483,7 @@ func (wa *WhatsAppClient) wrapNewsletterInfo(info *types.NewsletterMetadata) *br
 		}
 	}
 	avatar := &bridgev2.Avatar{}
+	// TODO direct media for newsletter avatars
 	if info.ThreadMeta.Picture != nil {
 		avatar.ID = networkid.AvatarID(info.ThreadMeta.Picture.ID)
 		avatar.Get = func(ctx context.Context) ([]byte, error) {
@@ -462,7 +492,7 @@ func (wa *WhatsAppClient) wrapNewsletterInfo(info *types.NewsletterMetadata) *br
 	} else if info.ThreadMeta.Preview.ID != "" {
 		avatar.ID = networkid.AvatarID(info.ThreadMeta.Preview.ID)
 		avatar.Get = func(ctx context.Context) ([]byte, error) {
-			meta, err := wa.Client.GetNewsletterInfo(info.ID)
+			meta, err := wa.Client.GetNewsletterInfo(ctx, info.ID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch full res avatar info: %w", err)
 			} else if meta.ThreadMeta.Picture == nil {
@@ -485,7 +515,7 @@ func (wa *WhatsAppClient) wrapNewsletterInfo(info *types.NewsletterMetadata) *br
 			TotalMemberCount: info.ThreadMeta.SubscriberCount,
 			MemberMap: map[networkid.UserID]bridgev2.ChatMember{
 				waid.MakeUserID(wa.JID): {
-					EventSender: wa.makeEventSender(wa.JID),
+					EventSender: wa.makeEventSender(ctx, wa.JID),
 					PowerLevel:  &ownPowerLevel,
 				},
 			},
