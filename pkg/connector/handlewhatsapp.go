@@ -25,8 +25,10 @@ import (
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/ptr"
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	"maunium.net/go/mautrix/bridgev2"
@@ -98,9 +100,9 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 	case *events.MarkChatAsRead:
 		success = wa.handleWAMarkChatAsRead(ctx, evt)
 	case *events.DeleteForMe:
-		success = wa.handleWADeleteForMe(evt)
+		success = wa.handleWADeleteForMe(ctx, evt)
 	case *events.DeleteChat:
-		success = wa.handleWADeleteChat(evt)
+		success = wa.handleWADeleteChat(ctx, evt)
 	case *events.Mute:
 		success = wa.handleWAMute(evt)
 	case *events.Archive:
@@ -128,15 +130,9 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 		success = wa.handleWAPictureUpdate(ctx, evt)
 
 	case *events.AppStateSyncComplete:
-		if len(wa.GetStore().PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
-			err := wa.updatePresence(ctx, types.PresenceUnavailable)
-			if err != nil {
-				log.Warn().Err(err).Msg("Failed to send presence after app state sync")
-			}
-			go wa.syncRemoteProfile(log.WithContext(context.Background()), nil)
-		} else if evt.Name == appstate.WAPatchCriticalUnblockLow {
-			go wa.resyncContacts(false, true)
-		}
+		wa.handleWAAppStateSyncComplete(ctx, evt)
+	case *events.AppStateSyncError:
+		wa.handleWAAppStateSyncError(ctx, evt)
 	case *events.AppState:
 		// Intentionally ignored
 	case *events.PushNameSetting:
@@ -174,6 +170,7 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 			}()
 			go wa.syncRemoteProfile(ctx, nil)
 		}
+		wa.MC.OnConnect(store.GetWAVersion()[2], wa.Device.Platform)
 	case *events.OfflineSyncPreview:
 		log.Info().
 			Int("message_count", evt.Messages).
@@ -251,12 +248,20 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 	return
 }
 
-func (wa *WhatsAppClient) rerouteWAMessage(ctx context.Context, info *types.MessageInfo) {
+func (wa *WhatsAppClient) rerouteWAMessage(ctx context.Context, evtType string, info *types.MessageSource, msgID any) {
+	if (info.Chat.Server == types.HiddenUserServer || info.Chat.Server == types.BroadcastServer) &&
+		info.Sender.Server == types.HiddenUserServer && info.SenderAlt.IsEmpty() {
+		info.SenderAlt, _ = wa.GetStore().LIDs.GetPNForLID(ctx, info.Sender)
+	}
+	if info.Chat.Server == types.HiddenUserServer && info.IsFromMe && info.RecipientAlt.IsEmpty() {
+		info.RecipientAlt, _ = wa.GetStore().LIDs.GetPNForLID(ctx, info.Chat)
+	}
 	if info.Chat.Server == types.HiddenUserServer && info.Sender.ToNonAD() == info.Chat && info.SenderAlt.Server == types.DefaultUserServer {
 		wa.UserLogin.Log.Debug().
 			Stringer("lid", info.Sender).
 			Stringer("pn", info.SenderAlt).
-			Str("message_id", info.ID).
+			Any("message_id", msgID).
+			Str("evt_type", evtType).
 			Msg("Forced LID DM sender to phone number in incoming message")
 		info.Sender, info.SenderAlt = info.SenderAlt, info.Sender
 		info.Chat = info.Sender.ToNonAD()
@@ -264,21 +269,40 @@ func (wa *WhatsAppClient) rerouteWAMessage(ctx context.Context, info *types.Mess
 		wa.UserLogin.Log.Debug().
 			Stringer("lid", info.Chat).
 			Stringer("pn", info.RecipientAlt).
-			Str("message_id", info.ID).
+			Any("message_id", msgID).
+			Str("evt_type", evtType).
 			Msg("Forced LID DM sender to phone number in own message sent from another device")
 		info.Chat = info.RecipientAlt.ToNonAD()
+		if info.Sender.Server == types.HiddenUserServer {
+			info.Sender, info.SenderAlt = info.SenderAlt, info.Sender
+			if info.Sender.IsEmpty() {
+				info.Sender = wa.GetStore().GetJID()
+				info.Sender.Device = info.SenderAlt.Device
+			}
+		}
+	} else if info.Chat.Server == types.BroadcastServer && info.Sender.Server == types.HiddenUserServer && info.SenderAlt.Server == types.DefaultUserServer {
+		wa.UserLogin.Log.Debug().
+			Stringer("lid", info.Sender).
+			Stringer("pn", info.SenderAlt).
+			Stringer("chat", info.Chat).
+			Any("message_id", msgID).
+			Str("evt_type", evtType).
+			Msg("Forced LID broadcast list sender to phone number in incoming message")
+		info.Sender, info.SenderAlt = info.SenderAlt, info.Sender
 	} else if info.Sender.Server == types.BotServer && info.Chat.Server == types.HiddenUserServer {
 		chatPN, err := wa.GetStore().LIDs.GetPNForLID(ctx, info.Chat)
 		if err != nil {
 			wa.UserLogin.Log.Err(err).
-				Str("message_id", info.ID).
+				Any("message_id", msgID).
 				Stringer("lid", info.Chat).
+				Str("evt_type", evtType).
 				Msg("Failed to get phone number of DM for incoming bot message")
 		} else if !chatPN.IsEmpty() {
 			wa.UserLogin.Log.Debug().
 				Stringer("lid", info.Chat).
 				Stringer("pn", chatPN).
-				Str("message_id", info.ID).
+				Any("message_id", msgID).
+				Str("evt_type", evtType).
 				Msg("Forced LID chat to phone number in bot message")
 			info.Chat = chatPN
 		}
@@ -287,7 +311,7 @@ func (wa *WhatsAppClient) rerouteWAMessage(ctx context.Context, info *types.Mess
 
 func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Message) (success bool) {
 	success = true
-	wa.rerouteWAMessage(ctx, &evt.Info)
+	wa.rerouteWAMessage(ctx, "message", &evt.Info.MessageSource, evt.Info.ID)
 	wa.UserLogin.Log.Trace().
 		Any("info", evt.Info).
 		Any("payload", evt.Message).
@@ -375,7 +399,7 @@ func (wa *WhatsAppClient) handleWAMessage(ctx context.Context, evt *events.Messa
 }
 
 func (wa *WhatsAppClient) handleWAUndecryptableMessage(ctx context.Context, evt *events.UndecryptableMessage) bool {
-	wa.rerouteWAMessage(ctx, &evt.Info)
+	wa.rerouteWAMessage(ctx, "undecryptable message", &evt.Info.MessageSource, evt.Info.ID)
 	wa.UserLogin.Log.Debug().
 		Any("info", evt.Info).
 		Bool("unavailable", evt.IsUnavailable).
@@ -399,25 +423,8 @@ func (wa *WhatsAppClient) handleWAUndecryptableMessage(ctx context.Context, evt 
 }
 
 func (wa *WhatsAppClient) handleWAReceipt(ctx context.Context, evt *events.Receipt) (success bool) {
-	if evt.Chat.Server == types.HiddenUserServer && evt.SenderAlt.IsEmpty() {
-		evt.SenderAlt, _ = wa.GetStore().LIDs.GetPNForLID(ctx, evt.Sender)
-	}
-	if evt.Chat.Server == types.HiddenUserServer && evt.Sender.ToNonAD() == evt.Chat && evt.SenderAlt.Server == types.DefaultUserServer {
-		wa.UserLogin.Log.Debug().
-			Stringer("lid", evt.Sender).
-			Stringer("pn", evt.SenderAlt).
-			Strs("message_id", evt.MessageIDs).
-			Msg("Forced LID DM sender to phone number in incoming receipt")
-		evt.Sender, evt.SenderAlt = evt.SenderAlt, evt.Sender
-		evt.Chat = evt.Sender.ToNonAD()
-	} else if evt.Chat.Server == types.HiddenUserServer && evt.IsFromMe && evt.RecipientAlt.Server == types.DefaultUserServer {
-		wa.UserLogin.Log.Debug().
-			Stringer("lid", evt.Chat).
-			Stringer("pn", evt.RecipientAlt).
-			Strs("message_id", evt.MessageIDs).
-			Msg("Forced LID DM sender to phone number in own receipt sent from another device")
-		evt.Chat = evt.RecipientAlt.ToNonAD()
-	}
+	origChat := evt.Chat
+	wa.rerouteWAMessage(ctx, "receipt", &evt.MessageSource, evt.MessageIDs)
 	if evt.IsFromMe && evt.Sender.Device == 0 {
 		wa.phoneSeen(evt.Timestamp)
 	}
@@ -436,6 +443,10 @@ func (wa *WhatsAppClient) handleWAReceipt(ctx context.Context, evt *events.Recei
 	messageSender := wa.JID
 	if !evt.MessageSender.IsEmpty() {
 		messageSender = evt.MessageSender
+		// Second part of rerouting receipts in LID chats
+		if messageSender == origChat && evt.Chat != origChat {
+			messageSender = evt.Chat
+		}
 	} else if evt.Chat.Server == types.GroupServer && evt.Sender.Server == types.HiddenUserServer {
 		lid := wa.GetStore().GetLID()
 		if !lid.IsEmpty() {
@@ -532,6 +543,7 @@ func (wa *WhatsAppClient) handleWACallStart(ctx context.Context, group, sender, 
 			Sender:       wa.makeEventSender(ctx, sender),
 			CreatePortal: true,
 			Timestamp:    ts,
+			StreamOrder:  ts.Unix(),
 		},
 		Data:               callType,
 		ID:                 waid.MakeFakeMessageID(chat, sender, "call-"+id),
@@ -550,6 +562,10 @@ func convertCallStart(ctx context.Context, portal *bridgev2.Portal, intent bridg
 			Content: &event.MessageEventContent{
 				MsgType: event.MsgText,
 				Body:    text,
+				BeeperActionMessage: &event.BeeperActionMessage{
+					Type:     event.BeeperActionMessageCall,
+					CallType: event.BeeperActionMessageCallType(callType),
+				},
 			},
 		}},
 	}, nil
@@ -594,11 +610,12 @@ func convertIdentityChange(ctx context.Context, portal *bridgev2.Portal, intent 
 	}, nil
 }
 
-func (wa *WhatsAppClient) handleWADeleteChat(evt *events.DeleteChat) bool {
+func (wa *WhatsAppClient) handleWADeleteChat(ctx context.Context, evt *events.DeleteChat) bool {
+	chatJID := wa.maybeConvertJIDToLID(ctx, evt.JID)
 	return wa.UserLogin.QueueRemoteEvent(&simplevent.ChatDelete{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventChatDelete,
-			PortalKey: wa.makeWAPortalKey(evt.JID),
+			PortalKey: wa.makeWAPortalKey(chatJID),
 			Timestamp: evt.Timestamp,
 		},
 		OnlyForMe: true,
@@ -606,23 +623,25 @@ func (wa *WhatsAppClient) handleWADeleteChat(evt *events.DeleteChat) bool {
 	}).Success
 }
 
-func (wa *WhatsAppClient) handleWADeleteForMe(evt *events.DeleteForMe) bool {
+func (wa *WhatsAppClient) handleWADeleteForMe(ctx context.Context, evt *events.DeleteForMe) bool {
+	chatJID := wa.maybeConvertJIDToLID(ctx, evt.ChatJID)
 	return wa.UserLogin.QueueRemoteEvent(&simplevent.MessageRemove{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventMessageRemove,
-			PortalKey: wa.makeWAPortalKey(evt.ChatJID),
+			PortalKey: wa.makeWAPortalKey(chatJID),
 			Timestamp: evt.Timestamp,
 		},
-		TargetMessage: waid.MakeMessageID(evt.ChatJID, evt.SenderJID, evt.MessageID),
+		TargetMessage: waid.MakeMessageID(chatJID, evt.SenderJID, evt.MessageID),
 		OnlyForMe:     true,
 	}).Success
 }
 
 func (wa *WhatsAppClient) handleWAMarkChatAsRead(ctx context.Context, evt *events.MarkChatAsRead) bool {
+	chatJID := wa.maybeConvertJIDToLID(ctx, evt.JID)
 	return wa.UserLogin.QueueRemoteEvent(&simplevent.Receipt{
 		EventMeta: simplevent.EventMeta{
 			Type:      bridgev2.RemoteEventReadReceipt,
-			PortalKey: wa.makeWAPortalKey(evt.JID),
+			PortalKey: wa.makeWAPortalKey(chatJID),
 			Sender:    wa.makeEventSender(ctx, wa.JID),
 			Timestamp: evt.Timestamp,
 		},
@@ -797,4 +816,100 @@ func (wa *WhatsAppClient) handleWAPin(evt *events.Pin) bool {
 	return wa.handleWAUserLocalPortalInfo(evt.JID, evt.Timestamp, &bridgev2.UserLocalPortalInfo{
 		Tag: &tag,
 	})
+}
+
+func (wa *WhatsAppClient) handleWAAppStateSyncComplete(ctx context.Context, evt *events.AppStateSyncComplete) {
+	log := zerolog.Ctx(ctx).With().
+		Str("patch_name", string(evt.Name)).
+		Uint64("patch_version", evt.Version).
+		Logger()
+	if len(wa.GetStore().PushName) > 0 && evt.Name == appstate.WAPatchCriticalBlock {
+		err := wa.updatePresence(ctx, types.PresenceUnavailable)
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to send presence after app state sync")
+		}
+		go wa.syncRemoteProfile(log.WithContext(context.Background()), nil)
+	} else if evt.Name == appstate.WAPatchCriticalUnblockLow {
+		go wa.resyncContacts(false, true)
+	}
+	wa.appStateRecoveryLock.Lock()
+	defer wa.appStateRecoveryLock.Unlock()
+	meta := wa.UserLogin.Metadata.(*waid.UserLoginMetadata)
+	if ts, exists := meta.AppStateRecoveryAttempted[evt.Name]; exists {
+		delete(wa.appStateFullSyncAttempted, evt.Name)
+		delete(meta.AppStateRecoveryAttempted, evt.Name)
+		err := wa.UserLogin.Save(ctx)
+		if err != nil {
+			log.Err(err).Msg("Failed to save login metadata after unmarking app state recovery as attempted")
+		} else {
+			log.Info().
+				Time("recovery_ts", ts).
+				Msg("Unmarked app state recovery as attempted after successful full sync")
+		}
+	} else if ts, exists = wa.appStateFullSyncAttempted[evt.Name]; exists {
+		delete(wa.appStateFullSyncAttempted, evt.Name)
+		log.Debug().Time("full_sync_ts", ts).Msg("Unmarked app state full sync attempted after successful sync")
+	}
+}
+
+func (wa *WhatsAppClient) handleWAAppStateSyncError(ctx context.Context, evt *events.AppStateSyncError) {
+	log := zerolog.Ctx(ctx).With().
+		Str("patch_name", string(evt.Name)).
+		Logger()
+	wa.appStateRecoveryLock.Lock()
+	defer wa.appStateRecoveryLock.Unlock()
+	meta := wa.UserLogin.Metadata.(*waid.UserLoginMetadata)
+	lastRecovery := meta.AppStateRecoveryAttempted[evt.Name]
+	lastFullSync := wa.appStateFullSyncAttempted[evt.Name]
+	if !lastRecovery.IsZero() && time.Since(lastRecovery) < 48*time.Hour {
+		log.Debug().Err(evt.Error).
+			Time("last_recovery_attempt", lastRecovery).
+			Time("last_full_sync_attempt", lastFullSync).
+			Msg("App state sync failed, but recovery already attempted")
+		return
+	}
+	if !evt.FullSync {
+		if !lastFullSync.IsZero() {
+			log.Debug().
+				Err(evt.Error).
+				Time("last_full_sync_attempt", lastFullSync).
+				Msg("App state sync failed, but full sync already attempted")
+			return
+		}
+		wa.appStateFullSyncAttempted[evt.Name] = time.Now()
+		log.Info().
+			Err(evt.Error).
+			Msg("Trying full sync for app state after partial sync error")
+		go func() {
+			err := wa.Client.FetchAppState(ctx, evt.Name, true, false)
+			if err != nil {
+				log.Err(err).Msg("Full app state sync failed")
+			} else {
+				log.Debug().Msg("Full app state sync succeeded")
+			}
+		}()
+		return
+	}
+	log.Info().
+		Err(evt.Error).
+		Msg("Trying recovery for app state after full sync error")
+	if meta.AppStateRecoveryAttempted == nil {
+		meta.AppStateRecoveryAttempted = make(map[appstate.WAPatchName]time.Time)
+	}
+	meta.AppStateRecoveryAttempted[evt.Name] = time.Now()
+	err := wa.UserLogin.Save(ctx)
+	if err != nil {
+		log.Err(err).Msg("Failed to save login metadata after marking app state recovery as attempted")
+	}
+	go func() {
+		resp, err := wa.Client.SendPeerMessage(ctx, whatsmeow.BuildAppStateRecoveryRequest(evt.Name))
+		if err != nil {
+			log.Err(err).Msg("Failed to send app state recovery request")
+		} else {
+			log.Debug().
+				Str("message_id", resp.ID).
+				Time("message_ts", resp.Timestamp).
+				Msg("Sent app state recovery request")
+		}
+	}()
 }

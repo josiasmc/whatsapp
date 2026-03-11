@@ -189,7 +189,7 @@ func (wa *WhatsAppClient) getContactList(ctx context.Context, filter string, onl
 	}
 	resp := make([]*bridgev2.ResolveIdentifierResponse, 0, len(contacts))
 	for jid, contactInfo := range contacts {
-		if onlyContacts && contactInfo.FirstName == "" {
+		if onlyContacts && (contactInfo.FirstName == "" && contactInfo.FullName == "") {
 			continue
 		}
 		if !matchesQuery(contactInfo.PushName, filter) && !matchesQuery(contactInfo.FullName, filter) && !matchesQuery(jid.User, filter) {
@@ -240,10 +240,10 @@ func (wa *WhatsAppClient) CreateGroup(ctx context.Context, params *bridgev2.Grou
 	}
 	var avatarBytes []byte
 	var avatarMXC id.ContentURIString
-	if params.Avatar != nil {
+	if params.Avatar != nil && params.Avatar.URL != "" {
 		avatarMXC = params.Avatar.URL
 		var err error
-		avatarBytes, err = wa.Main.Bridge.Bot.DownloadMedia(ctx, params.Avatar.URL, params.Avatar.MSC3414File)
+		avatarBytes, err = wa.Main.Bridge.Bot.DownloadMedia(ctx, params.Avatar.URL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to download avatar: %w", err)
 		}
@@ -331,6 +331,7 @@ func (wa *WhatsAppClient) CreateGroup(ctx context.Context, params *bridgev2.Grou
 			portal.AvatarID = networkid.AvatarID(avatarID)
 			portal.AvatarHash = sha256.Sum256(avatarBytes)
 			portal.AvatarMXC = avatarMXC
+			portal.AvatarSet = true
 			groupInfo.Avatar = &bridgev2.Avatar{
 				ID:   portal.AvatarID,
 				MXC:  portal.AvatarMXC,

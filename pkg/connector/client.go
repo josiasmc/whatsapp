@@ -27,6 +27,7 @@ import (
 	"github.com/rs/zerolog"
 	"go.mau.fi/util/exsync"
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waHistorySync"
 	"go.mau.fi/whatsmeow/proto/waWa6"
@@ -46,14 +47,16 @@ func (wa *WhatsAppConnector) LoadUserLogin(ctx context.Context, login *bridgev2.
 	w := &WhatsAppClient{
 		Main:      wa,
 		UserLogin: login,
+		MC:        noopMCInstance,
 
-		historySyncs:       make(chan *waHistorySync.HistorySync, 64),
-		historySyncWakeup:  make(chan struct{}, 1),
-		resyncQueue:        make(map[types.JID]resyncQueueItem),
-		directMediaRetries: make(map[networkid.MessageID]*directMediaRetry),
-		mediaRetryLock:     semaphore.NewWeighted(wa.Config.HistorySync.MediaRequests.MaxAsyncHandle),
-		pushNamesSynced:    exsync.NewEvent(),
-		createDedup:        exsync.NewSet[types.MessageID](),
+		historySyncs:              make(chan *waHistorySync.HistorySync, 64),
+		historySyncWakeup:         make(chan struct{}, 1),
+		resyncQueue:               make(map[types.JID]resyncQueueItem),
+		directMediaRetries:        make(map[networkid.MessageID]*directMediaRetry),
+		mediaRetryLock:            semaphore.NewWeighted(wa.Config.HistorySync.MediaRequests.MaxAsyncHandle),
+		pushNamesSynced:           exsync.NewEvent(),
+		createDedup:               exsync.NewSet[types.MessageID](),
+		appStateFullSyncAttempted: make(map[appstate.WAPatchName]time.Time),
 	}
 	login.Client = w
 
@@ -74,10 +77,8 @@ func (wa *WhatsAppConnector) LoadUserLogin(ctx context.Context, login *bridgev2.
 		w.Client = whatsmeow.NewClient(w.Device, waLog.Zerolog(log))
 		w.Client.AddEventHandlerWithSuccessStatus(w.handleWAEvent)
 		w.Client.SynchronousAck = true
-		if bridgev2.PortalEventBuffer == 0 {
-			w.Client.EnableDecryptedEventBuffer = true
-			w.Client.ManualHistorySyncDownload = true
-		}
+		w.Client.EnableDecryptedEventBuffer = bridgev2.PortalEventBuffer == 0
+		w.Client.ManualHistorySyncDownload = true
 		w.Client.SendReportingTokens = true
 		w.Client.AutomaticMessageRerequestFromPhone = true
 		w.Client.GetMessageForRetry = w.trackNotFoundRetry
@@ -85,6 +86,7 @@ func (wa *WhatsAppConnector) LoadUserLogin(ctx context.Context, login *bridgev2.
 		w.Client.BackgroundEventCtx = w.UserLogin.Log.WithContext(wa.Bridge.BackgroundCtx)
 		w.Client.SetForceActiveDeliveryReceipts(wa.Config.ForceActiveDeliveryReceipts)
 		w.Client.InitialAutoReconnect = wa.Config.InitialAutoReconnect
+		w.Client.UseRetryMessageStore = wa.Config.UseWhatsAppRetryStore
 	} else {
 		w.UserLogin.Log.Warn().Stringer("jid", w.JID).Msg("No device found for user in whatsmeow store")
 	}
@@ -103,6 +105,7 @@ type WhatsAppClient struct {
 	Client    *whatsmeow.Client
 	Device    *store.Device
 	JID       types.JID
+	MC        mClient
 
 	historySyncs       chan *waHistorySync.HistorySync
 	historySyncWakeup  chan struct{}
@@ -118,6 +121,9 @@ type WhatsAppClient struct {
 	pushNamesSynced    *exsync.Event
 	lastPresence       types.Presence
 	createDedup        *exsync.Set[types.MessageID]
+
+	appStateRecoveryLock      sync.Mutex
+	appStateFullSyncAttempted map[appstate.WAPatchName]time.Time
 }
 
 var (
@@ -192,6 +198,7 @@ func (wa *WhatsAppClient) Connect(ctx context.Context) {
 		wa.UserLogin.BridgeState.Send(state)
 		return
 	}
+	wa.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnecting})
 	wa.Main.firstClientConnectOnce.Do(wa.Main.onFirstClientConnect)
 	if err := wa.Main.updateProxy(ctx, wa.Client, false); err != nil {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to update proxy")
@@ -199,8 +206,10 @@ func (wa *WhatsAppClient) Connect(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	wa.initMC()
 	wa.startLoops()
 	wa.Client.BackgroundEventCtx = wa.UserLogin.Log.WithContext(wa.Main.Bridge.BackgroundCtx)
+	zerolog.Ctx(ctx).Debug().Msg("Connecting to WhatsApp")
 	if err := wa.Client.ConnectContext(ctx); err != nil {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to connect to WhatsApp")
 		state := status.BridgeState{
@@ -259,7 +268,7 @@ func (wa *WhatsAppClient) ConnectBackground(ctx context.Context, params *bridgev
 	defer func() {
 		wa.Client.GetClientPayload = nil
 	}()
-	err := wa.Client.Connect()
+	err := wa.Client.ConnectContext(ctx)
 	if err != nil {
 		return err
 	}

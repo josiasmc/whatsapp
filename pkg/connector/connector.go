@@ -20,11 +20,15 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/lib/pq"
+	"github.com/rs/zerolog"
 	"go.mau.fi/util/dbutil"
 	"go.mau.fi/util/random"
 	"go.mau.fi/whatsmeow"
@@ -32,16 +36,19 @@ import (
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	whatsmeowUpgrades "go.mau.fi/whatsmeow/store/sqlstore/upgrades"
+	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
+	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
 	"go.mau.fi/mautrix-whatsapp/pkg/connector/wadb"
 	"go.mau.fi/mautrix-whatsapp/pkg/msgconv"
+	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
 
 type WhatsAppConnector struct {
@@ -64,9 +71,10 @@ func init() {
 }
 
 var (
-	_ bridgev2.NetworkConnector      = (*WhatsAppConnector)(nil)
-	_ bridgev2.MaxFileSizeingNetwork = (*WhatsAppConnector)(nil)
-	_ bridgev2.StoppableNetwork      = (*WhatsAppConnector)(nil)
+	_ bridgev2.NetworkConnector        = (*WhatsAppConnector)(nil)
+	_ bridgev2.MaxFileSizeingNetwork   = (*WhatsAppConnector)(nil)
+	_ bridgev2.StoppableNetwork        = (*WhatsAppConnector)(nil)
+	_ bridgev2.NetworkResettingNetwork = (*WhatsAppConnector)(nil)
 )
 
 func (wa *WhatsAppConnector) SetMaxFileSize(maxSize int64) {
@@ -149,7 +157,78 @@ func (wa *WhatsAppConnector) Start(ctx context.Context) error {
 		return bridgev2.DBUpgradeError{Err: err, Section: "whatsapp"}
 	}
 
+	if !wa.Bridge.Background && wa.Bridge.DB.KV.Get(ctx, "whatsapp_lid_dms_deleted") == "false" {
+		wa.deleteLIDDMsMigration(ctx)
+	}
+
 	return nil
+}
+
+func (wa *WhatsAppConnector) deleteLIDDMsMigration(ctx context.Context) {
+	log := zerolog.Ctx(ctx).With().Str("action", "delete lid dms").Logger()
+	portals, err := wa.Bridge.GetAllPortalsWithMXID(ctx)
+	if err != nil {
+		log.Err(err).Msg("Failed to get portals for LID DM deletion")
+		return
+	}
+	defer wa.Bridge.DB.KV.Set(ctx, "whatsapp_lid_dms_deleted", "true")
+	if len(portals) == 0 {
+		log.Debug().Msg("No portals found")
+		return
+	}
+	portalsByKey := make(map[networkid.PortalKey]*bridgev2.Portal, len(portals))
+	for _, p := range portals {
+		if p.Receiver == "" || p.RoomType != database.RoomTypeDM {
+			continue
+		}
+		portalsByKey[p.PortalKey] = p
+	}
+	_, err = wa.DB.Exec(ctx, "DELETE FROM whatsapp_history_sync_conversation WHERE chat_jid LIKE '%@lid'")
+	if err != nil {
+		log.Err(err).Msg("Failed to remove LID conversations from history sync")
+	}
+	for key, portal := range portalsByKey {
+		parsedID, err := waid.ParsePortalID(key.ID)
+		if err != nil {
+			log.Warn().Err(err).Str("portal_id", string(key.ID)).Msg("Failed to parse portal ID")
+			continue
+		} else if parsedID.Server != types.HiddenUserServer {
+			continue
+		}
+		var pnStr string
+		err = wa.DB.QueryRow(ctx, "SELECT pn FROM whatsmeow_lid_map WHERE lid=$1", parsedID.User).Scan(&pnStr)
+		if err != nil {
+			log.Warn().Err(err).Str("portal_id", string(key.ID)).Msg("Failed to get PN for LID portal")
+			continue
+		}
+		key.ID = waid.MakePortalID(types.JID{User: pnStr, Server: types.DefaultUserServer})
+		_, pnPortalExists := portalsByKey[key]
+		if !pnPortalExists {
+			log.Warn().Str("portal_id", string(key.ID)).Msg("PN portal does not exist, not deleting LID DM")
+			continue
+		}
+		err = portal.Delete(ctx)
+		if err != nil {
+			log.Err(err).
+				Object("portal_key", portal.PortalKey).
+				Stringer("portal_mxid", portal.MXID).
+				Msg("Failed to delete LID DM portal from database")
+			continue
+		}
+		err = wa.Bridge.Bot.DeleteRoom(ctx, portal.MXID, false)
+		if err != nil {
+			log.Err(err).
+				Object("portal_key", portal.PortalKey).
+				Stringer("portal_mxid", portal.MXID).
+				Msg("Failed to delete LID DM portal from Matrix")
+			continue
+		}
+		log.Debug().
+			Object("portal_key", portal.PortalKey).
+			Stringer("portal_mxid", portal.MXID).
+			Msg("Deleted LID DM portal")
+	}
+	log.Info().Msg("Finished deleting LID DM portals")
 }
 
 func (wa *WhatsAppConnector) Stop() {
@@ -181,8 +260,17 @@ func (wa *WhatsAppConnector) onFirstBackgroundConnect() {
 }
 
 func (wa *WhatsAppConnector) onFirstClientConnect() {
+	wa.Bridge.Log.Debug().Msg("Fetching latest WhatsApp web version number")
 	ctx := wa.Bridge.BackgroundCtx
-	ver, err := whatsmeow.GetLatestVersion(ctx, nil)
+	ver, err := whatsmeow.GetLatestVersion(ctx, &http.Client{
+		Transport: &http.Transport{
+			DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ResponseHeaderTimeout: 5 * time.Second,
+			ForceAttemptHTTP2:     true,
+		},
+		Timeout: 10 * time.Second,
+	})
 	if err != nil {
 		wa.Bridge.Log.Err(err).Msg("Failed to get latest WhatsApp web version number")
 	} else {
@@ -202,4 +290,14 @@ func (wa *WhatsAppConnector) GenerateTransactionID(_ id.UserID, _ id.RoomID, _ e
 	// The "proper" way would be a hash of the user ID among other things, but the hash includes random bytes too,
 	// so nobody can tell the difference if we just generate random bytes.
 	return networkid.RawTransactionID(whatsmeow.WebMessageIDPrefix + strings.ToUpper(hex.EncodeToString(random.Bytes(9))))
+}
+
+func (wa *WhatsAppConnector) ResetHTTPTransport() {
+	// No-op for now, whatsmeow doesn't use the shared transport config yet
+}
+
+func (wa *WhatsAppConnector) ResetNetworkConnections() {
+	for _, login := range wa.Bridge.GetAllCachedUserLogins() {
+		login.Client.(*WhatsAppClient).Client.ResetConnection()
+	}
 }
