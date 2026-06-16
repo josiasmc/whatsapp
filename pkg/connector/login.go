@@ -76,8 +76,8 @@ var (
 	}
 	ErrRateLimitedByWhatsApp = bridgev2.RespError{
 		ErrCode:    "FI.MAU.WHATSAPP.RATE_LIMITED",
-		Err:        "Límite de frecuencia excedido por WhatsApp",
-		StatusCode: http.StatusTooManyRequests,
+		Err:        "Límite de frecuencia excedido por WhatsApp. Try again later.",
+		StatusCode: http.StatusBadRequest,
 	}
 )
 
