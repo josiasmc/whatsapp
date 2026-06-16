@@ -333,7 +333,7 @@ func (evt *WAUndecryptableMessage) GetType() bridgev2.RemoteEventType {
 	return bridgev2.RemoteEventMessage
 }
 
-const UndecryptableMessageNotice = "Esperando el mensaje. Esto puede demorar un poco." +
+const UndecryptableMessageNotice = "Esperando el mensaje. Esto puede demorarse un poco." +
 	"([aprender más](https://faq.whatsapp.com/general/security-and-privacy/seeing-waiting-for-this-message-this-may-take-a-while))"
 
 var undecryptableMessageContent event.MessageEventContent
@@ -354,7 +354,7 @@ func (evt *WAUndecryptableMessage) ConvertMessage(ctx context.Context, portal *b
 	}
 	content := &undecryptableMessageContent
 	if evt.Type == events.UnavailableTypeViewOnce {
-		body := "Recibiste un mensaje de visualización única. Para mayor privacidad, solamente puedes abrirlo en la app de WhatsApp."
+		body := "Recibiste un mensaje de visualización única. Para mayor privacidad, solamente puedes abrirlo en la aplicación de WhatsApp."
 		if evt.Info.IsFromMe {
 			body = "Enviaste un mensaje de visualización única desde otro dispositivo."
 		}
@@ -430,7 +430,7 @@ func (evt *WAMediaRetry) GetTimestamp() time.Time {
 func (evt *WAMediaRetry) makeErrorEdit(part *database.Message, meta *msgconv.PreparedMedia, err error) *bridgev2.ConvertedEdit {
 	content := &event.MessageEventContent{
 		MsgType: event.MsgNotice,
-		Body:    fmt.Sprintf("Failed to bridge media after re-requesting it from your phone: %v", err),
+		Body:    fmt.Sprintf("No se pudo obtener el contenido multimedia después de solicitarlo nuevamente desde tu teléfono: %v", err),
 	}
 	if meta.FormattedBody != "" {
 		content.EnsureHasHTML()

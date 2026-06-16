@@ -59,18 +59,18 @@ const (
 
 func init() {
 	status.BridgeStateHumanErrors.Update(status.BridgeStateErrorMap{
-		WALoggedOut:        "You were logged out from another device. Relogin to continue using the bridge.",
-		WANotLoggedIn:      "You're not logged into WhatsApp. Relogin to continue using the bridge.",
-		WAMainDeviceGone:   "Your phone was logged out from WhatsApp. Relogin to continue using the bridge.",
-		WAUnknownLogout:    "You were logged out for an unknown reason. Relogin to continue using the bridge.",
-		WANotConnected:     "You're not connected to WhatsApp",
-		WAConnecting:       "Reconnecting to WhatsApp...",
-		WAKeepaliveTimeout: "The WhatsApp web servers are not responding. The bridge will try to reconnect.",
-		WAPhoneOffline:     "Your phone hasn't been seen in over 12 days. The bridge is currently connected, but will get disconnected if you don't open the app soon.",
-		WAConnectionFailed: "Connecting to the WhatsApp web servers failed.",
-		WADisconnected:     "Disconnected from WhatsApp. Trying to reconnect.",
-		WAClientOutdated:   "Connect failure: 405 client outdated. Bridge must be updated.",
-		WAStreamReplaced:   "Stream replaced: the bridge was started in another location.",
+		WALoggedOut:        "Tu sesión ha sido cerrada desde otro dispositivo. Inicia sesión de nuevo para continuar usando el puente.",
+		WANotLoggedIn:      "No has iniciado sesión en WhatsApp. Inicia sesión de nuevo para continuar usando el puente.",
+		WAMainDeviceGone:   "Tu teléfono ha sido desconectado de WhatsApp. Inicia sesión de nuevo para continuar usando el puente.",
+		WAUnknownLogout:    "Has sido desconectado por un motivo desconocido. Inicia sesión de nuevo para continuar usando el puente.",
+		WANotConnected:     "No estás conectado a WhatsApp",
+		WAConnecting:       "Reconectando a WhatsApp...",
+		WAKeepaliveTimeout: "Los servidores web de WhatsApp no responden. El puente intentará reconectarse.",
+		WAPhoneOffline:     "Tu teléfono no ha sido visto hace más de 12 días. El puente está actualmente conectado, pero se desconectará si no abres la app pronto.",
+		WAConnectionFailed: "Conectando a los servidores web de WhatsApp ha fallado.",
+		WADisconnected:     "Has sido desconectado de WhatsApp. El puente intentará reconectarse.",
+		WAClientOutdated:   "Conexión fallida: cliente desactualizado. El puente debe ser actualizado.",
+		WAStreamReplaced:   "Conexión reemplazada: el puente fue iniciado en otra ubicación.",
 	})
 }
 
@@ -232,7 +232,7 @@ func (wa *WhatsAppClient) handleWAEvent(rawEvt any) (success bool) {
 		})
 		wa.notifyOfflineSyncWaiter(fmt.Errorf("connection failure: %s (%s)", evt.Reason, evt.Message))
 	case *events.ClientOutdated:
-		wa.UserLogin.Log.Error().Msg("Got a client outdated connect failure. The bridge is likely out of date, please update immediately.")
+		wa.UserLogin.Log.Error().Msg("Se recibió un error de cliente desactualizado. El puente seguramente esté desactualizado, por favor actualízalo inmediatamente.")
 		wa.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateUnknownError, Error: WAClientOutdated})
 		wa.notifyOfflineSyncWaiter(fmt.Errorf("client outdated"))
 	case *events.TemporaryBan:
@@ -595,9 +595,9 @@ func convertIdentityChange(ctx context.Context, portal *bridgev2.Portal, intent 
 	if err != nil {
 		return nil, err
 	}
-	text := fmt.Sprintf("Your security code with %s changed.", ghost.Name)
+	text := fmt.Sprintf("Tu código de seguridad con %s ha cambiado.", ghost.Name)
 	if data.Implicit {
-		text = fmt.Sprintf("Your security code with %s (device #%d) changed.", ghost.Name, data.JID.Device)
+		text = fmt.Sprintf("Tu código de seguridad con %s (dispositivo #%d) ha cambiado.", ghost.Name, data.JID.Device)
 	}
 	return &bridgev2.ConvertedMessage{
 		Parts: []*bridgev2.ConvertedMessagePart{{

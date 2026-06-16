@@ -49,7 +49,7 @@ var (
 )
 
 var (
-	ErrInputLooksLikeEmail = bridgev2.WrapRespErr(errors.New("WhatsApp only supports phone numbers as user identifiers. Number looks like email"), mautrix.MInvalidParam)
+	ErrInputLooksLikeEmail = bridgev2.WrapRespErr(errors.New("WhatsApp solo soporta números de teléfono como identificadores de usuario. El número parece un correo electrónico"), mautrix.MInvalidParam)
 )
 
 func looksEmaily(str string) bool {
@@ -77,11 +77,11 @@ func (wa *WhatsAppClient) validateIdentifer(ctx context.Context, number string) 
 	} else if wa.Client == nil || !wa.Client.IsLoggedIn() {
 		return types.EmptyJID, bridgev2.ErrNotLoggedIn
 	} else if resp, err := wa.Client.IsOnWhatsApp(ctx, []string{number}); err != nil {
-		return types.EmptyJID, fmt.Errorf("failed to check if number is on WhatsApp: %w", err)
+		return types.EmptyJID, fmt.Errorf("error al comprobar si el número está en WhatsApp: %w", err)
 	} else if len(resp) == 0 {
-		return types.EmptyJID, fmt.Errorf("the server did not respond to the query")
+		return types.EmptyJID, fmt.Errorf("el servidor no respondió a la consulta")
 	} else if !resp[0].IsIn {
-		return types.EmptyJID, bridgev2.WrapRespErr(fmt.Errorf("the server said +%s is not on WhatsApp", resp[0].JID.User), mautrix.MNotFound)
+		return types.EmptyJID, bridgev2.WrapRespErr(fmt.Errorf("el servidor dijo que +%s no está en WhatsApp", resp[0].JID.User), mautrix.MNotFound)
 	} else {
 		return resp[0].JID, nil
 	}
@@ -112,10 +112,10 @@ func (wa *WhatsAppClient) startChatLIDToPN(ctx context.Context, jid types.JID) (
 	if jid.Server == types.HiddenUserServer {
 		pn, err := wa.GetStore().LIDs.GetPNForLID(ctx, jid)
 		if err != nil {
-			return jid, fmt.Errorf("failed to get phone number for lid: %w", err)
+			return jid, fmt.Errorf("no se pudo obtener el número de teléfono para el LID: %w", err)
 		} else if pn.IsEmpty() {
 			// Don't allow starting chats with LIDs for now
-			return jid, fmt.Errorf("phone number not found")
+			return jid, fmt.Errorf("número de teléfono no encontrado")
 		}
 		return pn, nil
 	}
@@ -181,7 +181,7 @@ func matchesQuery(str string, query string) bool {
 
 func (wa *WhatsAppClient) getContactList(ctx context.Context, filter string, onlyContacts bool) ([]*bridgev2.ResolveIdentifierResponse, error) {
 	if !wa.IsLoggedIn() {
-		return nil, mautrix.MForbidden.WithMessage("You must be logged in to list contacts")
+		return nil, mautrix.MForbidden.WithMessage("Tienes que estar conectado para listar contactos")
 	}
 	contacts, err := wa.GetStore().Contacts.GetAllContacts(ctx)
 	if err != nil {
@@ -274,7 +274,7 @@ func (wa *WhatsAppClient) CreateGroup(ctx context.Context, params *bridgev2.Grou
 						},
 					},
 					Parsed: &event.MessageEventContent{
-						Body:    "Invitation to join my WhatsApp group",
+						Body:    "Invitación para unirse al grupo de WhatsApp",
 						MsgType: event.MsgText,
 					},
 				}

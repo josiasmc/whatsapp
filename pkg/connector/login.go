@@ -34,11 +34,11 @@ const (
 func (wa *WhatsAppConnector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
 		Name:        "QR",
-		Description: "Scan a QR code to pair the bridge to your WhatsApp account",
+		Description: "Escanea un código QR para conectar el puente a tu cuenta de WhatsApp",
 		ID:          LoginFlowIDQR,
 	}, {
-		Name:        "Pairing code",
-		Description: "Input your phone number to get a pairing code, to pair the bridge to your WhatsApp account",
+		Name:        "Código de emparejamiento",
+		Description: "Ingresa tu número de teléfono para obtener un código de emparejamiento, para conectar el puente a tu cuenta de WhatsApp",
 		ID:          LoginFlowIDPhone,
 	}}
 }
@@ -46,7 +46,7 @@ func (wa *WhatsAppConnector) GetLoginFlows() []bridgev2.LoginFlow {
 var (
 	ErrLoginClientOutdated = bridgev2.RespError{
 		ErrCode:    "FI.MAU.WHATSAPP.CLIENT_OUTDATED",
-		Err:        "Got client outdated error while waiting for QRs. The bridge must be updated to continue.",
+		Err:        "Se recibió un error de cliente desactualizado al esperar por el código QR. El puente debe ser actualizado para continuar.",
 		StatusCode: http.StatusInternalServerError,
 	}
 	ErrLoginMultideviceNotEnabled = bridgev2.RespError{
@@ -56,7 +56,7 @@ var (
 	}
 	ErrLoginTimeout = bridgev2.RespError{
 		ErrCode:    "FI.MAU.WHATSAPP.LOGIN_TIMEOUT",
-		Err:        "Entering code or scanning QR timed out. Please try again.",
+		Err:        "Se excedió el tiempo de espera al ingresar el código o escanear el QR. Por favor, inténtalo de nuevo.",
 		StatusCode: http.StatusBadRequest,
 	}
 	ErrUnexpectedDisconnect = bridgev2.RespError{
@@ -66,17 +66,17 @@ var (
 	}
 	ErrPhoneNumberTooShort = bridgev2.RespError{
 		ErrCode:    "FI.MAU.WHATSAPP.PHONE_NUMBER_TOO_SHORT",
-		Err:        "Phone number too short",
+		Err:        "El número de teléfono es demasiado corto",
 		StatusCode: http.StatusBadRequest,
 	}
 	ErrPhoneNumberIsNotInternational = bridgev2.RespError{
 		ErrCode:    "FI.MAU.WHATSAPP.PHONE_NUMBER_NOT_INTERNATIONAL",
-		Err:        "Phone number must be in international format",
+		Err:        "El número de teléfono debe estar en formato internacional",
 		StatusCode: http.StatusBadRequest,
 	}
 	ErrRateLimitedByWhatsApp = bridgev2.RespError{
 		ErrCode:    "FI.MAU.WHATSAPP.RATE_LIMITED",
-		Err:        "Rate limited by WhatsApp",
+		Err:        "Límite de frecuencia excedido por WhatsApp",
 		StatusCode: http.StatusTooManyRequests,
 	}
 )
@@ -145,8 +145,8 @@ func (wl *WALogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 				Fields: []bridgev2.LoginInputDataField{{
 					Type:        bridgev2.LoginInputFieldTypePhoneNumber,
 					ID:          "phone_number",
-					Name:        "Phone number",
-					Description: "Your WhatsApp phone number in international format",
+					Name:        "Número de teléfono",
+					Description: "Tu número de teléfono de WhatsApp en formato internacional",
 				}},
 			},
 		}, nil
@@ -210,7 +210,7 @@ func (wl *WALogin) SubmitUserInput(ctx context.Context, input map[string]string)
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeDisplayAndWait,
 		StepID:       LoginStepIDCode,
-		Instructions: "Input the pairing code in the WhatsApp mobile app to log in",
+		Instructions: "Ingrese el código de emparejamiento en la aplicación móvil de WhatsApp para iniciar sesión",
 		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
 			Type: bridgev2.LoginDisplayTypeCode,
 			Data: pairingCode,
@@ -222,7 +222,7 @@ func makeQRStep(qr string) *bridgev2.LoginStep {
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeDisplayAndWait,
 		StepID:       LoginStepIDQR,
-		Instructions: "Scan the QR code with the WhatsApp mobile app to log in",
+		Instructions: "Escanee el código QR con la aplicación móvil de WhatsApp para iniciar sesión",
 		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
 			Type: bridgev2.LoginDisplayTypeQR,
 			Data: qr,

@@ -52,7 +52,7 @@ func (wa *WhatsAppConnector) SetUseDirectMedia() {
 
 var ErrReloadNeeded = mautrix.RespError{
 	ErrCode:    "FI.MAU.WHATSAPP_RELOAD_NEEDED",
-	Err:        "Media is no longer available on WhatsApp servers and must be re-requested from your phone",
+	Err:        "El contenido multimedia no está disponible en los servidores de WhatsApp y debe solicitarse nuevamente desde tu teléfono",
 	StatusCode: http.StatusNotFound,
 }
 
