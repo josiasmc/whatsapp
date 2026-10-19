@@ -42,7 +42,7 @@ func (mc *MessageConverter) convertTemplateMessage(ctx context.Context, info *ty
 		return &bridgev2.ConvertedMessagePart{
 			Type: event.EventMessage,
 			Content: &event.MessageEventContent{
-				Body:    "Unsupported business message (template)",
+				Body:    "Mensaje de negocio no soportado",
 				MsgType: event.MsgText,
 			},
 		}, tplMsg.GetContextInfo()
@@ -81,7 +81,7 @@ func (mc *MessageConverter) convertTemplateMessage(ctx context.Context, info *ty
 	case *waE2E.TemplateMessage_HydratedFourRowTemplate_VideoMessage:
 		convertedTitle, _ = mc.convertMediaMessage(ctx, title.VideoMessage, "video attachment", info, false, nil)
 	case *waE2E.TemplateMessage_HydratedFourRowTemplate_LocationMessage:
-		content = fmt.Sprintf("Unsupported location message\n\n%s", content)
+		content = fmt.Sprintf("Mensaje de localización no soportado\n\n%s", content)
 	case *waE2E.TemplateMessage_HydratedFourRowTemplate_HydratedTitleText:
 		content = fmt.Sprintf("%s\n\n%s", title.HydratedTitleText, content)
 	}
@@ -112,7 +112,7 @@ func (mc *MessageConverter) convertInteractiveMessage(ctx context.Context, info 
 	content := msg.GetBody().GetText()
 	switch interactive := msg.GetInteractiveMessage().(type) {
 	case *waE2E.InteractiveMessage_ShopStorefrontMessage:
-		content = fmt.Sprintf("%s\n\nUnsupported shop storefront message", content)
+		content = fmt.Sprintf("%s\n\nMensaje de tienda no soportado", content)
 	case *waE2E.InteractiveMessage_CollectionMessage_:
 		// There doesn't seem to be much content here, maybe it's just meant to show the body/header/footer?
 	case *waE2E.InteractiveMessage_NativeFlowMessage_:
@@ -124,7 +124,7 @@ func (mc *MessageConverter) convertInteractiveMessage(ctx context.Context, info 
 			content = fmt.Sprintf("%s\n\n%s\nUsa la app de WhatsApp para presionar los botones", content, strings.Join(descriptions, " - "))
 		}
 	case *waE2E.InteractiveMessage_CarouselMessage_:
-		content = fmt.Sprintf("%s\n\nUnsupported carousel message", content)
+		content = fmt.Sprintf("%s\n\nMensaje de carrusel no soportado", content)
 	}
 	if footer := msg.GetFooter().GetText(); footer != "" {
 		content = fmt.Sprintf("%s\n\n%s", content, footer)
@@ -145,11 +145,11 @@ func (mc *MessageConverter) convertInteractiveMessage(ctx context.Context, info 
 	case *waE2E.InteractiveMessage_Header_VideoMessage:
 		convertedTitle, _ = mc.convertMediaMessage(ctx, headerMedia.VideoMessage, "video attachment", info, false, nil)
 	case *waE2E.InteractiveMessage_Header_LocationMessage:
-		content = fmt.Sprintf("Unsupported location message\n\n%s", content)
+		content = fmt.Sprintf("Mensaje de localización no soportado\n\n%s", content)
 	case *waE2E.InteractiveMessage_Header_ProductMessage:
-		content = fmt.Sprintf("Unsupported product message\n\n%s", content)
+		content = fmt.Sprintf("Mensaje de producto no soportado\n\n%s", content)
 	case *waE2E.InteractiveMessage_Header_JPEGThumbnail:
-		content = fmt.Sprintf("Unsupported thumbnail message\n\n%s", content)
+		content = fmt.Sprintf("Mensaje de miniatura no soportado\n\n%s", content)
 	}
 
 	converted := mc.postProcessBusinessMessage(content, convertedTitle)
@@ -191,7 +191,7 @@ func (mc *MessageConverter) convertButtonsMessage(ctx context.Context, info *typ
 	case *waE2E.ButtonsMessage_VideoMessage:
 		convertedHeader, _ = mc.convertMediaMessage(ctx, header.VideoMessage, "video attachment", info, false, nil)
 	case *waE2E.ButtonsMessage_LocationMessage:
-		content = fmt.Sprintf("Unsupported location message\n\n%s", content)
+		content = fmt.Sprintf("Mensaje de localización no soportado\n\n%s", content)
 	case *waE2E.ButtonsMessage_Text:
 		content = fmt.Sprintf("%s\n\n%s", header.Text, content)
 	}
@@ -313,7 +313,7 @@ func (mc *MessageConverter) convertListResponseMessage(ctx context.Context, msg 
 	} else if msg.GetDescription() != "" {
 		body = msg.GetDescription()
 	} else {
-		body = "Unsupported list reply message"
+		body = "Listado no soportado"
 	}
 	return &bridgev2.ConvertedMessagePart{
 		Type: event.EventMessage,

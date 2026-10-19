@@ -120,7 +120,7 @@ func (mc *MessageConverter) DownloadImagePack(ctx context.Context, userLoginID n
 			DisplayName: pack.Name,
 			AvatarURL:   "",
 			Usage:       []event.ImagePackUsage{event.ImagePackUsageSticker},
-			Attribution: fmt.Sprintf("By %s on WhatsApp %s", pack.Publisher, canonicalURL),
+			Attribution: fmt.Sprintf("Por %s en WhatsApp %s", pack.Publisher, canonicalURL),
 			BridgedPack: &event.BridgedStickerPack{
 				Network: StickerSourceID,
 				URL:     canonicalURL,

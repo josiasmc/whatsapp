@@ -58,7 +58,7 @@ func (mc *MessageConverter) convertUnknownMessage(ctx context.Context, msg *waE2
 	}, nil
 }
 
-var otpContent = format.RenderMarkdown("You received a one-time passcode. For added security, you can only see it on your primary device for WhatsApp. [Learn more](https://faq.whatsapp.com/372839278914311)", true, false)
+var otpContent = format.RenderMarkdown("Recibiste un código de verificación de WhatsApp. Por favor, vea el mensaje en la app de WhatsApp.", true, false)
 
 func init() {
 	otpContent.MsgType = event.MsgNotice
@@ -179,20 +179,20 @@ func (mc *MessageConverter) convertMessageHistoryNotice(ctx context.Context, inf
 	metadata := msg.GetMessageHistoryMetadata()
 
 	sender := mc.formatMessageHistoryNoticeJID(ctx, info.Sender)
-	body := fmt.Sprintf("%s sent message history", sender)
+	body := fmt.Sprintf("%s envió un historial de mensajes", sender)
 	if receiverText := mc.formatMessageHistoryNoticeReceivers(ctx, metadata.GetHistoryReceivers()); receiverText != "" {
 		body = fmt.Sprintf("%s to %s", body, receiverText)
 	}
 	if count := metadata.GetMessageCount(); count > 0 {
-		messageWord := "messages"
+		messageWord := "mensajes"
 		if count == 1 {
-			messageWord = "message"
+			messageWord = "mensaje"
 		}
 		body = fmt.Sprintf("%s (%d %s)", body, count, messageWord)
 	}
 	if metadata != nil && metadata.OldestMessageTimestampInWindow != nil {
 		oldestTS := time.Unix(metadata.GetOldestMessageTimestampInWindow(), 0).In(mc.messageHistoryNoticeLocation(ctx))
-		body = fmt.Sprintf("%s, starting %s", body, oldestTS.Format("Jan 2, 2006 at 3:04 PM"))
+		body = fmt.Sprintf("%s, comenzando con %s", body, oldestTS.Format("Jan 2, 2006 at 3:04 PM"))
 	}
 	body += "."
 
@@ -228,7 +228,7 @@ func (mc *MessageConverter) convertEphemeralSettingMessage(ctx context.Context, 
 				SendNotice: false,
 			})
 		} else {
-			content.Body += ", but the change was ignored."
+			content.Body += ", pero el cambio fue ignorado."
 		}
 	}
 	return &bridgev2.ConvertedMessagePart{
@@ -249,7 +249,7 @@ func (mc *MessageConverter) convertEphemeralSettingMessage(ctx context.Context, 
 
 const eventMessageTemplate = `
 {{- if .Name -}}
-	<h4>{{ .Name }} {{- if .IsCanceled -}}<span> (Canceled)</span>{{- end -}}</h4>
+	<h4>{{ .Name }} {{- if .IsCanceled -}}<span> (Cancelado)</span>{{- end -}}</h4>
 {{- end -}}
 {{- if .StartTime -}}
 	<p>
@@ -310,7 +310,7 @@ func (mc *MessageConverter) convertEventMessage(ctx context.Context, msg *waE2E.
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to execute event message template")
 		content = event.MessageEventContent{
 			MsgType: event.MsgNotice,
-			Body:    "Failed to parse event message",
+			Body:    "No se pudo parsear el mensaje de evento",
 		}
 	} else {
 		content = format.HTMLToContent(buf.String())
@@ -322,9 +322,9 @@ func (mc *MessageConverter) convertEventMessage(ctx context.Context, msg *waE2E.
 }
 
 func (mc *MessageConverter) convertPinInChatMessage(ctx context.Context, msg *waE2E.PinInChatMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
-	body := "Pinned a message"
+	body := "Mensaje fijado"
 	if msg.GetType() == waE2E.PinInChatMessage_UNPIN_FOR_ALL {
-		body = "Unpinned a message"
+		body = "Mensaje desfijado"
 	}
 
 	return &bridgev2.ConvertedMessagePart{
@@ -337,9 +337,9 @@ func (mc *MessageConverter) convertPinInChatMessage(ctx context.Context, msg *wa
 }
 
 func (mc *MessageConverter) convertKeepInChatMessage(ctx context.Context, msg *waE2E.KeepInChatMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
-	body := "Kept a message"
+	body := "Mensaje guardado"
 	if msg.GetKeepType() == waE2E.KeepType_UNDO_KEEP_FOR_ALL {
-		body = "Unkept a message"
+		body = "Mensaje desguardado"
 	}
 
 	return &bridgev2.ConvertedMessagePart{

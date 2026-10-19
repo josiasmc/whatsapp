@@ -439,7 +439,7 @@ func (mc *MessageConverter) makeMediaFailure(ctx context.Context, mediaInfo *Pre
 	logLevel := zerolog.ErrorLevel
 	var extra map[string]any
 	var dbMeta any
-	errorMsg := fmt.Sprintf("Failed to bridge %s, please view it on the WhatsApp app", mediaInfo.TypeDescription)
+	errorMsg := fmt.Sprintf("Ocurrió un error al enlazar %s, por favor vea el mensaje en la aplicación WhatsApp", mediaInfo.TypeDescription)
 	if keys != nil && (errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith403) || errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith404) || errors.Is(err, whatsmeow.ErrMediaDownloadFailedWith410)) {
 		logLevel = zerolog.DebugLevel
 		keys.DirectPath = ""
@@ -460,7 +460,7 @@ func (mc *MessageConverter) makeMediaFailure(ctx context.Context, mediaInfo *Pre
 	}
 	zerolog.Ctx(ctx).WithLevel(logLevel).Err(err).
 		Str("media_type", mediaInfo.TypeDescription).
-		Msg("Failed to reupload WhatsApp attachment")
+		Msg("Ocurrió un error al reenviar el adjunto de WhatsApp")
 	part := &bridgev2.ConvertedMessagePart{
 		Type: event.EventMessage,
 		Content: &event.MessageEventContent{

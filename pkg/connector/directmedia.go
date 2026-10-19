@@ -287,16 +287,16 @@ func (wa *WhatsAppClient) requestAndWaitDirectMedia(ctx context.Context, rawMsgI
 		}
 		switch state.resultType {
 		case waMmsRetry.MediaRetryNotification_NOT_FOUND:
-			return mautrix.MNotFound.WithMessage("This media was not found on your phone.")
+			return mautrix.MNotFound.WithMessage("Este contenido multimedia no fue hallado en tu teléfono.")
 		case waMmsRetry.MediaRetryNotification_DECRYPTION_ERROR:
-			return mautrix.MNotFound.WithMessage("Unable to retrieve media: phone reported a decryption error. The original message may have been deleted.")
+			return mautrix.MNotFound.WithMessage("No se pudo obtener el contenido multimedia: el teléfono reportó un error de descifrado. El mensaje original puede haber sido eliminado.")
 		case waMmsRetry.MediaRetryNotification_GENERAL_ERROR:
-			return mautrix.MNotFound.WithMessage("Unable to retrieve media: phone returned an error. Please ensure your phone is connected to the internet and WhatsApp is running.").WithCanRetry(true)
+			return mautrix.MNotFound.WithMessage("No se pudo obtener el contenido multimedia: el teléfono retornó un error. Por favor, asegúrate de que tu teléfono esté conectado a internet y que WhatsApp esté en ejecución.").WithCanRetry(true)
 		default:
-			return mautrix.MNotFound.WithMessage(fmt.Sprintf("Unable to retrieve media: phone returned error code %d", state.resultType)).WithCanRetry(true)
+			return mautrix.MNotFound.WithMessage(fmt.Sprintf("No se pudo obtener el contenido multimedia: el teléfono retornó un error de código %d", state.resultType)).WithCanRetry(true)
 		}
 	case <-time.After(30 * time.Second):
-		return mautrix.MNotFound.WithMessage("Phone did not respond in time. Please ensure your phone is connected to the internet and WhatsApp is open.").WithStatus(http.StatusGatewayTimeout).WithCanRetry(true)
+		return mautrix.MNotFound.WithMessage("El teléfono no respondió en tiempo. Por favor, asegúrate de que tu teléfono esté conectado a internet y que WhatsApp esté en ejecución.").WithStatus(http.StatusGatewayTimeout).WithCanRetry(true)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
