@@ -1,3 +1,57 @@
+# v26.10
+
+* Added support for new rich response messages used by the Muse AI bot.
+* Added support for bridging custom profile set for Muse.
+* Added automatic one-time resync of keys needed to decrypt Muse messages.
+* Added support for blocking and unblocking users on WhatsApp.
+* Added support for contact array messages (thanks to [@voska] in [#961]).
+* Added partial support for filling quoted message when sending replies to
+  WhatsApp.
+* Changed undecryptable message resends to only bridge as edits and never as new
+  messages, to avoid races if the message was deleted before the resend.
+* Changed login to wait for OTKs to be successfully uploaded, as the login will
+  fail if the bridge is stopped before that point.
+* Changed chat info syncing to not bridge mute status if app state sync is
+  failing.
+* Changed power levels to allow poll votes in read-only groups even if the room
+  is encrypted.
+* Fixed backfilled media retries not getting sent if configured for local time.
+* Fixed "delete for me" from WhatsApp not being bridged correctly in DMs.
+* Fixed very long WhatsApp messages not being bridged.
+* Fixed document message caption edits not being handled correctly.
+
+[@voska]: https://github.com/voska
+[#961]: https://github.com/mautrix/whatsapp/pull/961
+
+# v26.09
+
+* Bumped minimum Go version to 1.26.
+* Added option to limit eager member sync in group chat portals.
+* Added option to fetch avatars lazily when using direct media.
+* Added one-time migration to ensure LID ghost avatars are consistent with the
+  old phone number ghosts.
+* Fixed the resolve identifier command and API not returning any user info for
+  users who hadn't previously been encountered.
+* Fixed group portal power levels to always allow poll responses.
+* Fixed handling history sync events where the phone sends nonsensical
+  timestamps.
+* Fixed handling edits to HD media captions.
+* Fixed handling bridging own read receipts from the native apps in channels.
+* Fixed decrypting messages from the new Muse AI bot
+  * May require resyncing app state using `!wa sync appstate regular_high`.
+  * The message contents aren't supported yet.
+
+# v26.08
+
+* Switched direct chats to use LIDs instead of phone numbers.
+
+# v26.07
+
+* Updated Docker image to Alpine 3.24.
+* Added support for the extra passkey authentication step when logging in.
+* Added support for newer versions of poll messages from WhatsApp.
+* Fixed poll votes in DMs.
+
 # v26.06
 
 * Added placeholder for group message history share notices.

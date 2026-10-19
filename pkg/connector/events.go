@@ -39,18 +39,6 @@ import (
 	"go.mau.fi/mautrix-whatsapp/pkg/waid"
 )
 
-func (wa *WhatsAppClient) getPortalKeyByMessageSource(ms types.MessageSource) networkid.PortalKey {
-	jid := ms.Chat
-	if ms.IsIncomingBroadcast() {
-		if ms.IsFromMe {
-			jid = ms.BroadcastListOwner.ToNonAD()
-		} else {
-			jid = ms.Sender.ToNonAD()
-		}
-	}
-	return wa.makeWAPortalKey(jid)
-}
-
 type MessageInfoWrapper struct {
 	Info types.MessageInfo
 	wa   *WhatsAppClient
@@ -61,7 +49,26 @@ func (evt *MessageInfoWrapper) ShouldCreatePortal() bool {
 }
 
 func (evt *MessageInfoWrapper) GetPortalKey() networkid.PortalKey {
-	return evt.wa.getPortalKeyByMessageSource(evt.Info.MessageSource)
+	ms := evt.Info.MessageSource
+	jid := ms.Chat
+	if ms.IsIncomingBroadcast() {
+		if ms.IsFromMe {
+			// TODO can this still be a phone number?
+			jid = ms.BroadcastListOwner.ToNonAD()
+		} else {
+			jid = ms.Sender.ToNonAD()
+			if jid.Server == types.DefaultUserServer && !ms.SenderAlt.IsEmpty() {
+				jid = ms.SenderAlt.ToNonAD()
+			}
+		}
+	} else if jid.Server == types.DefaultUserServer {
+		if !ms.IsFromMe && ms.Chat.ToNonAD() == ms.Sender.ToNonAD() && !ms.SenderAlt.IsEmpty() {
+			jid = ms.SenderAlt.ToNonAD()
+		} else if !ms.RecipientAlt.IsEmpty() {
+			jid = ms.RecipientAlt.ToNonAD()
+		}
+	}
+	return evt.wa.makeWAPortalKey(jid)
 }
 
 func (evt *MessageInfoWrapper) AddLogContext(c zerolog.Context) zerolog.Context {
@@ -72,12 +79,19 @@ func (evt *MessageInfoWrapper) GetTimestamp() time.Time {
 	return evt.Info.Timestamp
 }
 
+func pickLID(main, alt types.JID) types.JID {
+	if main.Server == types.DefaultUserServer && alt.Server == types.HiddenUserServer {
+		return alt
+	}
+	return main
+}
+
 func (evt *MessageInfoWrapper) GetSender() bridgev2.EventSender {
-	return evt.wa.makeEventSender(evt.wa.Main.Bridge.BackgroundCtx, evt.Info.Sender)
+	return evt.wa.makeEventSender(evt.wa.Main.Bridge.BackgroundCtx, pickLID(evt.Info.Sender, evt.Info.SenderAlt))
 }
 
 func (evt *MessageInfoWrapper) GetID() networkid.MessageID {
-	return waid.MakeMessageID(evt.Info.Chat, evt.Info.Sender, evt.Info.ID)
+	return waid.MakeMessageIDWithAltSender(evt.Info.Chat, evt.Info.Sender, evt.Info.SenderAlt, evt.Info.ID)
 }
 
 func (evt *MessageInfoWrapper) GetTransactionID() networkid.TransactionID {
@@ -122,6 +136,9 @@ func (evt *WAMessageEvent) AddLogContext(c zerolog.Context) zerolog.Context {
 	if targetMsg := evt.GetTargetMessage(); targetMsg != "" {
 		c = c.Str("target_message_id", string(targetMsg))
 	}
+	if evt.parsedMessageType == "edit" {
+		c = c.Str("edit_inner_message_type", getMessageType(evt.Message.GetProtocolMessage().GetEditedMessage()))
+	}
 	return evt.MessageInfoWrapper.AddLogContext(c).Str("parsed_message_type", evt.parsedMessageType)
 }
 
@@ -134,14 +151,6 @@ func (evt *WAMessageEvent) PreHandle(ctx context.Context, portal *bridgev2.Porta
 		return
 	}
 	meta := portal.Metadata.(*waid.PortalMetadata)
-	if meta.AddressingMode == types.AddressingModeLID && evt.Info.Sender.Server == types.DefaultUserServer {
-		evt.Info.Sender, evt.Info.SenderAlt = evt.Info.SenderAlt, evt.Info.Sender
-		zerolog.Ctx(ctx).Debug().
-			Stringer("lid", evt.Info.Sender).
-			Stringer("pn", evt.Info.SenderAlt).
-			Str("message_id", evt.Info.ID).
-			Msg("Forced phone number sender to LID in group message")
-	}
 	if meta.AddressingMode == types.AddressingModeLID || meta.LIDMigrationAttempted {
 		return
 	}
@@ -160,13 +169,6 @@ func (evt *WAMessageEvent) PreHandle(ctx context.Context, portal *bridgev2.Porta
 	log.Info().Msg("Resyncing group members as it appears to have switched to LID addressing mode")
 	portal.UpdateInfo(ctx, evt.wa.wrapGroupInfo(ctx, info), evt.wa.UserLogin, nil, time.Time{})
 	log.Debug().Msg("Finished resyncing after LID change")
-	if evt.Info.Sender.Server == types.DefaultUserServer && evt.Info.SenderAlt.Server == types.HiddenUserServer {
-		evt.Info.Sender, evt.Info.SenderAlt = evt.Info.SenderAlt, evt.Info.Sender
-		log.Debug().
-			Stringer("new_sender", evt.Info.Sender).
-			Stringer("new_sender_alt", evt.Info.SenderAlt).
-			Msg("Overriding sender to LID after resyncing group members")
-	}
 }
 
 func (evt *WAMessageEvent) PostHandle(ctx context.Context, portal *bridgev2.Portal) {
@@ -190,18 +192,49 @@ func (evt *WAMessageEvent) ConvertEdit(ctx context.Context, portal *bridgev2.Por
 		cacheMessage = evt.GetID()
 	} else {
 		editedMsg = evt.Message.GetProtocolMessage().GetEditedMessage()
-		previouslyConvertedPart = evt.wa.Main.GetMediaEditCache(portal, targetMessage)
+		if editedMsg.GetLottieStickerMessage().GetMessage() != nil {
+			editedMsg = editedMsg.GetLottieStickerMessage().GetMessage()
+		}
+		if editedMsg.GetDocumentWithCaptionMessage().GetMessage() != nil {
+			editedMsg = editedMsg.GetDocumentWithCaptionMessage().GetMessage()
+		}
 		meta := existing[0].Metadata.(*waid.MessageMetadata)
 		if slices.Contains(meta.Edits, evt.Info.ID) {
 			return nil, fmt.Errorf("%w: edit already handled", bridgev2.ErrIgnoringRemoteEvent)
 		}
 		meta.Edits = append(meta.Edits, evt.Info.ID)
+		previouslyConvertedPart = evt.wa.Main.GetMediaEditCache(portal, targetMessage)
+		if previouslyConvertedPart == nil && needsPreviousEditPart(editedMsg) {
+			editedEvent, err := evt.wa.Main.Bridge.Bot.GetEvent(ctx, portal.MXID, existing[0].MXID)
+			if err != nil {
+				zerolog.Ctx(ctx).Err(err).Msg("Failed to fetch existing event for edit")
+			} else if editedEvent != nil && editedEvent.Content.AsMessage().MsgType != "" {
+				zerolog.Ctx(ctx).Debug().Msg("Fetched existing edit from server for caption edit")
+				copiedExtra := make(map[string]any)
+				for _, key := range []string{"info", msgconv.FailedMediaField} {
+					val, ok := editedEvent.Content.Raw[key]
+					if ok {
+						copiedExtra[key] = val
+					}
+				}
+				previouslyConvertedPart = &bridgev2.ConvertedMessagePart{
+					ID:         existing[0].PartID,
+					Type:       editedEvent.Type,
+					Content:    editedEvent.Content.AsMessage(),
+					Extra:      copiedExtra,
+					DBMetadata: meta,
+				}
+			} else {
+				zerolog.Ctx(ctx).Debug().Msg("Didn't find existing edit on server for caption edit")
+			}
+		}
 	}
 
 	ctx = context.WithValue(ctx, msgconv.ContextKeyEditTargetID, evt.Message.GetProtocolMessage().GetKey().GetID())
 	cm := evt.wa.Main.MsgConv.ToMatrix(
 		ctx, portal, evt.wa.Client, intent, editedMsg, evt.MsgEvent.RawMessage, &evt.Info, evt.isViewOnce(), false, previouslyConvertedPart,
 	)
+	evt.addMuseProfile(portal, cm)
 	if evt.isUndecryptableUpsertSubEvent && isFailedMedia(cm) {
 		evt.postHandle = func() {
 			evt.wa.processFailedMedia(ctx, portal.PortalKey, evt.GetID(), cm, false)
@@ -282,11 +315,30 @@ func (evt *WAMessageEvent) HandleExisting(ctx context.Context, portal *bridgev2.
 	return bridgev2.UpsertResult{}, nil
 }
 
+func (evt *WAMessageEvent) addMuseProfile(portal *bridgev2.Portal, converted *bridgev2.ConvertedMessage) {
+	if evt.Info.Chat != types.MuseJID || evt.Info.IsFromMe || !portal.NameIsCustom {
+		return
+	}
+	profile := &event.BeeperPerMessageProfile{
+		ID:          string(portal.MXID),
+		Displayname: portal.Name,
+	}
+	if portal.AvatarMXC != "" {
+		profile.AvatarURL = &portal.AvatarMXC
+	}
+	for _, part := range converted.Parts {
+		if part.Content != nil {
+			part.Content.BeeperPerMessageProfile = profile
+		}
+	}
+}
+
 func (evt *WAMessageEvent) ConvertMessage(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {
 	evt.wa.EnqueuePortalResync(portal, false)
 	converted := evt.wa.Main.MsgConv.ToMatrix(
 		ctx, portal, evt.wa.Client, intent, evt.Message, evt.MsgEvent.RawMessage, &evt.Info, evt.isViewOnce(), false, nil,
 	)
+	evt.addMuseProfile(portal, converted)
 	if isFailedMedia(converted) {
 		evt.postHandle = func() {
 			evt.wa.processFailedMedia(ctx, portal.PortalKey, evt.GetID(), converted, false)
@@ -316,7 +368,10 @@ func (evt *WANowDecryptableMessage) GetTargetMessage() networkid.MessageID {
 }
 
 func (evt *WANowDecryptableMessage) AddLogContext(c zerolog.Context) zerolog.Context {
-	return c
+	if evt.editParts != nil {
+		return c.Bool("from_upsert", true)
+	}
+	return evt.WAMessageEvent.AddLogContext(c.Bool("from_upsert", false))
 }
 
 func (evt *WANowDecryptableMessage) GetType() bridgev2.RemoteEventType {
@@ -391,7 +446,9 @@ func (evt *WAUndecryptableMessage) GetStreamOrder() int64 {
 
 type WAMediaRetry struct {
 	*events.MediaRetry
-	wa *WhatsAppClient
+	wa        *WhatsAppClient
+	senderLID types.JID
+	chatLID   types.JID
 }
 
 func (evt *WAMediaRetry) GetType() bridgev2.RemoteEventType {
@@ -399,7 +456,7 @@ func (evt *WAMediaRetry) GetType() bridgev2.RemoteEventType {
 }
 
 func (evt *WAMediaRetry) GetPortalKey() networkid.PortalKey {
-	return evt.wa.makeWAPortalKey(evt.ChatID)
+	return evt.wa.makeWAPortalKey(pickLID(evt.ChatID, evt.chatLID))
 }
 
 func (evt *WAMediaRetry) AddLogContext(c zerolog.Context) zerolog.Context {
@@ -412,17 +469,12 @@ func (evt *WAMediaRetry) AddLogContext(c zerolog.Context) zerolog.Context {
 }
 
 func (evt *WAMediaRetry) getRealSender() types.JID {
-	sender := evt.SenderID
-	if evt.FromMe {
-		sender = evt.wa.JID.ToNonAD()
-	} else if sender.IsEmpty() && (evt.ChatID.Server == types.DefaultUserServer || evt.ChatID.Server == types.BotServer) {
-		sender = evt.ChatID.ToNonAD()
-	}
-	return sender
+	return evt.wa.getRealSender(evt.ChatID, evt.SenderID, evt.FromMe)
 }
 
 func (evt *WAMediaRetry) GetSender() bridgev2.EventSender {
-	return evt.wa.makeEventSender(evt.wa.Main.Bridge.BackgroundCtx, evt.getRealSender())
+	realSender := pickLID(evt.getRealSender(), evt.senderLID)
+	return evt.wa.makeEventSender(evt.wa.Main.Bridge.BackgroundCtx, realSender)
 }
 
 func (evt *WAMediaRetry) GetTargetMessage() networkid.MessageID {
@@ -487,6 +539,7 @@ func (evt *WAMediaRetry) ConvertEdit(ctx context.Context, portal *bridgev2.Porta
 			log.Debug().Msg("Got error response in media retry notification, but response also contains a new download URL - trying to download")
 		}
 	}
+	log.Trace().Any("retry_content", retryData).Msg("Decrypted successful media retry response")
 	err = evt.wa.mediaRetryLock.Acquire(ctx, 1)
 	if err != nil {
 		return nil, fmt.Errorf("failed to acquire media retry lock: %w", err)

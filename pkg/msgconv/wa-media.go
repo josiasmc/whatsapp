@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/rs/zerolog"
+	"go.mau.fi/util/exfmt"
 	"go.mau.fi/util/exmime"
 	"go.mau.fi/util/exslices"
 	"go.mau.fi/whatsmeow"
@@ -99,13 +100,17 @@ func (mc *MessageConverter) convertMediaMessage(
 		if err != nil {
 			panic(err)
 		}
-		part = &bridgev2.ConvertedMessagePart{
-			Type:    preparedMedia.Type,
-			Content: preparedMedia.MessageEventContent,
-			Extra:   preparedMedia.Extra,
-			DBMetadata: &waid.MessageMetadata{
-				DirectMediaMeta: directMediaMeta,
-			},
+		if mediaKeys.DirectPath == "" {
+			part = mc.makeMediaFailure(ctx, preparedMedia, mediaKeys, whatsmeow.ErrNoURLPresent)
+		} else {
+			part = &bridgev2.ConvertedMessagePart{
+				Type:    preparedMedia.Type,
+				Content: preparedMedia.MessageEventContent,
+				Extra:   preparedMedia.Extra,
+				DBMetadata: &waid.MessageMetadata{
+					DirectMediaMeta: directMediaMeta,
+				},
+			}
 		}
 	} else if err := mc.reuploadWhatsAppAttachment(ctx, msg, preparedMedia); err != nil {
 		part = mc.makeMediaFailure(ctx, preparedMedia, mediaKeys, err)
@@ -129,10 +134,10 @@ func getMediaIDVersion(msg MediaMessage) []byte {
 func (mc *MessageConverter) convertAlbumMessage(ctx context.Context, msg *waE2E.AlbumMessage) (*bridgev2.ConvertedMessagePart, *waE2E.ContextInfo) {
 	parts := make([]string, 0, 2)
 	if msg.GetExpectedImageCount() > 0 {
-		parts = append(parts, fmt.Sprintf("%d imágenes", msg.GetExpectedImageCount()))
+		parts = append(parts, exfmt.Pluralizable("image")(int(msg.GetExpectedImageCount())))
 	}
 	if msg.GetExpectedVideoCount() > 0 {
-		parts = append(parts, fmt.Sprintf("%d vídeos", msg.GetExpectedVideoCount()))
+		parts = append(parts, exfmt.Pluralizable("video")(int(msg.GetExpectedVideoCount())))
 	}
 	var partDesc string
 	if len(parts) > 0 {

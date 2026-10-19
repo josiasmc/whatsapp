@@ -1,3 +1,19 @@
+// mautrix-whatsapp - A Matrix-WhatsApp puppeting bridge.
+// Copyright (C) 2026 Tulir Asokan
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 package connector
 
 import (
@@ -19,6 +35,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	"golang.org/x/image/draw"
 	"google.golang.org/protobuf/proto"
 	"maunium.net/go/mautrix/bridgev2"
@@ -46,6 +63,7 @@ var (
 	_ bridgev2.TagHandlingNetworkAPI            = (*WhatsAppClient)(nil)
 	_ bridgev2.MarkedUnreadHandlingNetworkAPI   = (*WhatsAppClient)(nil)
 	_ bridgev2.DeleteChatHandlingNetworkAPI     = (*WhatsAppClient)(nil)
+	_ bridgev2.UserBlockingNetworkAPI           = (*WhatsAppClient)(nil)
 )
 
 func (wa *WhatsAppClient) HandleMatrixPollStart(ctx context.Context, msg *bridgev2.MatrixPollStart) (result *bridgev2.MatrixMessageResponse, retErr error) {
@@ -88,6 +106,7 @@ func (wa *WhatsAppClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2
 
 var ErrBroadcastSendDisabled = bridgev2.WrapErrorInStatus(errors.New("sending status messages is disabled")).WithErrorAsMessage().WithIsCertain(true).WithSendNotice(true).WithErrorReason(event.MessageStatusUnsupported)
 var ErrBroadcastReactionUnsupported = bridgev2.WrapErrorInStatus(errors.New("reacting to status messages is not currently supported")).WithErrorAsMessage().WithIsCertain(true).WithSendNotice(true).WithErrorReason(event.MessageStatusUnsupported)
+var ErrNotCommunityAdmin = bridgev2.WrapErrorInStatus(errors.New("only community admins can send announcements")).WithErrorAsMessage().WithIsCertain(true).WithSendNotice(true).WithErrorReason(event.MessageStatusNoPermission)
 
 func (wa *WhatsAppClient) handleConvertedMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage, waMsg *waE2E.Message, req *whatsmeow.SendRequestExtra) (*bridgev2.MatrixMessageResponse, error) {
 	if req == nil {
@@ -98,25 +117,32 @@ func (wa *WhatsAppClient) handleConvertedMatrixMessage(ctx context.Context, msg 
 	} else {
 		req.ID = wa.Client.GenerateMessageID()
 	}
+	req.CheckPermissions = true
 
 	chatJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return nil, err
 	}
+	if chatJID.Server == types.DefaultUserServer {
+		zerolog.Ctx(ctx).Warn().Stringer("portal_jid", chatJID).Msg("Matrix message received in phone number portal")
+	}
 	if chatJID == types.StatusBroadcastJID && wa.Main.Config.DisableStatusBroadcastSend {
 		return nil, ErrBroadcastSendDisabled
 	}
 	wrappedMsgID := waid.MakeMessageID(chatJID, wa.JID, req.ID)
-	wrappedMsgID2 := waid.MakeMessageID(chatJID, wa.GetStore().GetLID(), req.ID)
+	wrappedMsgID2 := waid.MakeMessageID(chatJID, wa.GetLID(), req.ID)
 	msg.AddPendingToIgnore(networkid.TransactionID(wrappedMsgID))
 	msg.AddPendingToIgnore(networkid.TransactionID(wrappedMsgID2))
 	zerolog.Ctx(ctx).Trace().Any("payload", waMsg).Msg("Outgoing message payload")
 	resp, err := wa.Client.SendMessage(ctx, chatJID, waMsg, *req)
 	if err != nil {
+		if errors.Is(err, whatsmeow.ErrNoPermissionInGroup) {
+			return nil, ErrNotCommunityAdmin
+		}
 		return nil, err
 	}
 	var pickedMessageID networkid.MessageID
-	if resp.Sender == wa.GetStore().GetLID() && chatJID.Server != types.DefaultUserServer {
+	if resp.Sender == wa.GetLID() {
 		pickedMessageID = wrappedMsgID2
 		msg.RemovePending(networkid.TransactionID(wrappedMsgID))
 	} else {
@@ -137,18 +163,17 @@ func (wa *WhatsAppClient) handleConvertedMatrixMessage(ctx context.Context, msg 
 	}, nil
 }
 
-func (wa *WhatsAppClient) PreHandleMatrixReaction(_ context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
+func (wa *WhatsAppClient) PreHandleMatrixReaction(ctx context.Context, msg *bridgev2.MatrixReaction) (bridgev2.MatrixReactionPreResponse, error) {
 	portalJID, err := waid.ParsePortalID(msg.Portal.ID)
 	if err != nil {
 		return bridgev2.MatrixReactionPreResponse{}, fmt.Errorf("failed to parse portal ID: %w", err)
 	} else if portalJID == types.StatusBroadcastJID {
 		return bridgev2.MatrixReactionPreResponse{}, ErrBroadcastReactionUnsupported
 	}
-	sender := wa.JID
-	if portalJID.Server == types.HiddenUserServer ||
-		msg.Portal.Metadata.(*waid.PortalMetadata).CommunityAnnouncementGroup ||
-		msg.Portal.Metadata.(*waid.PortalMetadata).AddressingMode == types.AddressingModeLID {
-		sender = wa.GetStore().GetLID()
+	sender := wa.GetLID()
+	if portalJID.Server == types.DefaultUserServer {
+		zerolog.Ctx(ctx).Warn().Stringer("portal_jid", portalJID).Msg("Matrix reaction received in phone number portal")
+		sender = wa.JID
 	}
 	return bridgev2.MatrixReactionPreResponse{
 		SenderID:     waid.MakeUserID(sender),
@@ -177,7 +202,7 @@ func (wa *WhatsAppClient) HandleMatrixReaction(ctx context.Context, msg *bridgev
 	defer wa.mcTrack(msg, time.Now(), &retErr)
 	var req whatsmeow.SendRequestExtra
 	if msg.Portal.Metadata.(*waid.PortalMetadata).CommunityAnnouncementGroup {
-		reactionMsg.EncReactionMessage, err = wa.Client.EncryptReaction(ctx, msgconv.MessageIDToInfo(wa.Client, messageID), reactionMsg.ReactionMessage)
+		reactionMsg.EncReactionMessage, err = wa.Client.EncryptReaction(ctx, msgconv.MessageIDToInfo(ctx, wa.Client, messageID), reactionMsg.ReactionMessage)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt reaction: %w", err)
 		}
@@ -320,7 +345,7 @@ func (wa *WhatsAppClient) HandleMatrixReadReceipt(ctx context.Context, receipt *
 		if err != nil {
 			continue
 		}
-		if parsed.Sender.User == wa.GetStore().GetLID().User || parsed.Sender.User == wa.JID.User {
+		if wa.IsOwnJID(parsed.Sender) {
 			continue
 		}
 		var key types.JID
@@ -419,6 +444,12 @@ func (wa *WhatsAppClient) HandleMatrixMembership(ctx context.Context, msg *bridg
 		default:
 			return nil, nil
 		}
+	} else if portalJID.Server == types.NewsletterServer {
+		if msg.Type != bridgev2.Leave {
+			return nil, fmt.Errorf("cannot change channel members")
+		}
+		defer wa.mcTrack(msg, time.Now(), &retErr)
+		return nil, wa.Client.UnfollowNewsletter(ctx, portalJID)
 	}
 
 	changes := make([]types.JID, 1)
@@ -636,7 +667,7 @@ func (wa *WhatsAppClient) getLastMessageInfo(ctx context.Context, chatJID types.
 		lastTS = msgs[0].Timestamp
 		parsed, _ := waid.ParseMessageID(msgs[0].ID)
 		if parsed != nil {
-			fromMe := parsed.Sender.ToNonAD() == wa.JID.ToNonAD() || parsed.Sender.ToNonAD() == wa.GetStore().GetLID().ToNonAD()
+			fromMe := wa.IsOwnJID(parsed.Sender)
 			var participant *string
 			if chatJID.Server == types.GroupServer {
 				participant = ptr.Ptr(parsed.Sender.String())
@@ -670,7 +701,10 @@ func (wa *WhatsAppClient) HandleMatrixDeleteChat(ctx context.Context, msg *bridg
 	if err != nil {
 		return err
 	}
-	if chatJID.Server == types.GroupServer {
+	if chatJID.Server == types.NewsletterServer {
+		defer wa.mcTrack(msg, time.Now(), &retErr)
+		return wa.Client.UnfollowNewsletter(ctx, chatJID)
+	} else if chatJID.Server == types.GroupServer {
 		memberInfo, err := wa.Main.Bridge.Matrix.GetMemberInfo(ctx, msg.Portal.MXID, wa.UserLogin.UserMXID)
 		if err != nil {
 			return fmt.Errorf("failed to get own member info: %w", err)
@@ -688,4 +722,36 @@ func (wa *WhatsAppClient) HandleMatrixDeleteChat(ctx context.Context, msg *bridg
 	}
 	defer wa.mcTrack(msg, time.Now(), &retErr)
 	return wa.Client.SendAppState(ctx, appstate.BuildDeleteChat(chatJID, lastTS, lastKey, true))
+}
+
+func (wa *WhatsAppClient) HandleMatrixBlockUser(ctx context.Context, msg *bridgev2.MatrixBlockUser) error {
+	if wa.Client == nil {
+		return bridgev2.ErrNotLoggedIn
+	}
+	jid, err := waid.ParsePortalID(msg.Portal.ID)
+	if err != nil {
+		return err
+	}
+	if msg.Content.ReportSpam {
+		return fmt.Errorf("spam reporting is not supported")
+	}
+	action := events.BlocklistChangeActionUnblock
+	if msg.Content.Block {
+		action = events.BlocklistChangeActionBlock
+	}
+	blocklist, err := wa.Client.UpdateBlocklist(ctx, jid, action, "")
+	if err == nil {
+		wa.blocklistLock.Lock()
+		defer wa.blocklistLock.Unlock()
+		evts := wa.saveBlocklistUnlocked(ctx, blocklist)
+		go func() {
+			for _, evt := range evts {
+				if evt.PortalKey == msg.Portal.PortalKey {
+					continue
+				}
+				wa.UserLogin.QueueRemoteEvent(evt)
+			}
+		}()
+	}
+	return err
 }

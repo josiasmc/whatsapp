@@ -30,6 +30,7 @@ import (
 	"go.mau.fi/util/ptr"
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	_ "golang.org/x/image/webp"
 	"maunium.net/go/mautrix/bridgev2"
@@ -175,6 +176,12 @@ func (mc *MessageConverter) ToMatrix(
 		part, contextInfo = mc.convertPollCreationMessage(ctx, waMsg.PollCreationMessageV2)
 	case waMsg.PollCreationMessageV3 != nil:
 		part, contextInfo = mc.convertPollCreationMessage(ctx, waMsg.PollCreationMessageV3)
+	//case waMsg.PollCreationMessageV4 != nil:
+	//	part, contextInfo = mc.convertPollCreationMessage(ctx, waMsg.PollCreationMessageV4)
+	case waMsg.PollCreationMessageV5 != nil:
+		part, contextInfo = mc.convertPollCreationMessage(ctx, waMsg.PollCreationMessageV5)
+	case waMsg.PollCreationMessageV6 != nil:
+		part, contextInfo = mc.convertPollCreationMessage(ctx, waMsg.PollCreationMessageV6)
 	case waMsg.PollUpdateMessage != nil:
 		part, contextInfo = mc.convertPollUpdateMessage(ctx, info, waMsg.PollUpdateMessage)
 	case waMsg.EventMessage != nil:
@@ -184,7 +191,7 @@ func (mc *MessageConverter) ToMatrix(
 	case waMsg.KeepInChatMessage != nil:
 		part, contextInfo = mc.convertKeepInChatMessage(ctx, waMsg.KeepInChatMessage)
 	case waMsg.RichResponseMessage != nil:
-		part, contextInfo = mc.convertRichResponseMessage(ctx, waMsg.RichResponseMessage)
+		part, contextInfo = mc.convertRichResponseMessage(ctx, waMsg.RichResponseMessage, waMsg)
 	case waMsg.ImageMessage != nil:
 		part, contextInfo = mc.convertMediaMessage(ctx, waMsg.ImageMessage, "photo", info, isViewOnce, previouslyConvertedPart)
 	case waMsg.StickerMessage != nil:
@@ -265,30 +272,26 @@ func (mc *MessageConverter) ToMatrix(
 		if chat.IsEmpty() {
 			chat, _ = waid.ParsePortalID(portal.ID)
 		}
-		// We reroute all DMs to the phone number JID, so reroute reply participants too
-		pcp = rerouteMessageKey(ctx, chat, pcp, getPortal(ctx).Metadata.(*waid.PortalMetadata).AddressingMode == types.AddressingModeLID)
-		if store := getClient(ctx).Store; store != nil && chat.Server == types.DefaultUserServer && pcp.Server == types.HiddenUserServer {
-			pcpPN, _ := store.LIDs.GetPNForLID(ctx, pcp)
-			zerolog.Ctx(ctx).Debug().
-				Stringer("orig_participant", pcp).
-				Stringer("rerouted_participant", pcpPN).
-				Msg("Rerouting reply target (PN recipient in LID DM)")
-			if !pcpPN.IsEmpty() {
-				pcp = pcpPN
-			}
-		} else if store != nil && chat.Server == types.GroupServer && pcp.Server == types.DefaultUserServer && getPortal(ctx).Metadata.(*waid.PortalMetadata).AddressingMode == types.AddressingModeLID {
-			pcpLID, _ := store.LIDs.GetLIDForPN(ctx, pcp)
-			zerolog.Ctx(ctx).Debug().
-				Stringer("orig_participant", pcp).
-				Stringer("rerouted_participant", pcpLID).
-				Msg("Rerouting reply target (PN recipient in LID group)")
-			if !pcpLID.IsEmpty() {
-				pcp = pcpLID
-			}
-		}
 		cm.ReplyTo = &networkid.MessageOptionalPartID{
 			MessageID: waid.MakeMessageID(chat, pcp, contextInfo.GetStanzaID()),
 		}
+		var pn, lid types.JID
+		if pcp.Server == types.DefaultUserServer {
+			pn = pcp
+			lid, _ = getStore(client).LIDs.GetLIDForPN(ctx, pcp)
+		} else if pcp.Server == types.HiddenUserServer {
+			lid = pcp
+			pn, _ = getStore(client).LIDs.GetPNForLID(ctx, pcp)
+		} else if pcp.Server == types.BotServer {
+			lid = pcp
+		}
+		if !pn.IsEmpty() {
+			cm.ReplyToLogin = waid.MakeUserLoginID(pn)
+		}
+		if !lid.IsEmpty() {
+			cm.ReplyToUser = waid.MakeUserID(lid)
+		}
+		// TODO set reply to room
 	}
 	if contextInfo.GetIsForwarded() {
 		hasCaption := part.Content.FileName != "" && part.Content.FileName != part.Content.Body
@@ -319,4 +322,13 @@ func (mc *MessageConverter) ToMatrix(
 	}
 
 	return cm
+}
+
+func getStore(cli *whatsmeow.Client) *store.Device {
+	if cli != nil {
+		if currentStore := cli.Store; currentStore != nil {
+			return currentStore
+		}
+	}
+	return store.NoopDevice
 }

@@ -94,31 +94,7 @@ func (mc *MessageConverter) convertPollCreationMessage(ctx context.Context, msg 
 	}, msg.GetContextInfo()
 }
 
-func rerouteMessageKey(ctx context.Context, chat, sender types.JID, groupLIDAddressing bool) types.JID {
-	if store := getClient(ctx).Store; store != nil && chat.Server == types.DefaultUserServer && sender.Server == types.HiddenUserServer {
-		senderPN, _ := store.LIDs.GetPNForLID(ctx, sender)
-		zerolog.Ctx(ctx).Debug().
-			Stringer("orig_participant", sender).
-			Stringer("rerouted_participant", senderPN).
-			Msg("Rerouting message key (PN recipient in LID DM)")
-		if !senderPN.IsEmpty() {
-			return senderPN
-		}
-	} else if store != nil && chat.Server == types.GroupServer && sender.Server == types.DefaultUserServer && groupLIDAddressing {
-		senderLID, _ := store.LIDs.GetLIDForPN(ctx, sender)
-		zerolog.Ctx(ctx).Debug().
-			Stringer("orig_participant", sender).
-			Stringer("rerouted_participant", senderLID).
-			Msg("Rerouting message key (PN recipient in LID group)")
-		if !senderLID.IsEmpty() {
-			return senderLID
-		}
-	}
-	return sender
-}
-
 func KeyToMessageID(ctx context.Context, client *whatsmeow.Client, chat, sender types.JID, key *waCommon.MessageKey) networkid.MessageID {
-	groupLIDAddressing := sender.Server == types.HiddenUserServer
 	sender = sender.ToNonAD()
 	var err error
 	if !key.GetFromMe() {
@@ -131,15 +107,19 @@ func KeyToMessageID(ctx context.Context, client *whatsmeow.Client, chat, sender 
 			if sender.Server == types.LegacyUserServer {
 				sender.Server = types.DefaultUserServer
 			}
-		} else if chat.Server == types.DefaultUserServer || chat.Server == types.BotServer {
-			if sender.User == client.Store.GetJID().User || sender.User == client.Store.GetLID().User {
+		} else if chat.Server == types.DefaultUserServer || chat.Server == types.HiddenUserServer || chat.Server == types.BotServer {
+			if sender.User == getStore(client).GetJID().User || sender.User == getStore(client).GetLID().User {
 				// Message key is not from the sender, but message sender (containing key) is me,
 				// so message key sender is the other user in the DM
 				sender = chat
 			} else {
 				// Message key is not from the sender, but message sender (containing key) is not me,
 				// so message key sender is me
-				sender = client.Store.GetJID().ToNonAD()
+				if chat.Server == types.HiddenUserServer {
+					sender = getStore(client).GetLID().ToNonAD()
+				} else {
+					sender = getStore(client).GetJID().ToNonAD()
+				}
 			}
 		} else {
 			zerolog.Ctx(ctx).Warn().
@@ -157,10 +137,6 @@ func KeyToMessageID(ctx context.Context, client *whatsmeow.Client, chat, sender 
 			chat = remoteJID
 		}
 	}
-	sender = rerouteMessageKey(
-		context.WithValue(ctx, contextKeyClient, client),
-		chat, sender, groupLIDAddressing,
-	)
 	return waid.MakeMessageID(chat, sender, key.GetID())
 }
 

@@ -54,8 +54,9 @@ func (wa *WhatsAppConnector) LoadUserLogin(ctx context.Context, login *bridgev2.
 		directMediaRetries:        make(map[networkid.MessageID]*directMediaRetry),
 		mediaRetryLock:            semaphore.NewWeighted(wa.Config.HistorySync.MediaRequests.MaxAsyncHandle),
 		pushNamesSynced:           exsync.NewEvent(),
-		createDedup:               exsync.NewSet[types.MessageID](),
 		appStateFullSyncAttempted: make(map[appstate.WAPatchName]time.Time),
+
+		disableNewsletter: store.BaseClientPayload.GetUserAgent().GetPlatform() == waWa6.ClientPayload_UserAgent_MACOS,
 	}
 	login.Client = w
 
@@ -70,13 +71,14 @@ func (wa *WhatsAppConnector) LoadUserLogin(ctx context.Context, login *bridgev2.
 	if err != nil {
 		return err
 	}
+	w.LID = w.Device.GetLID()
 
 	if w.Device != nil {
 		log := w.UserLogin.Log.With().Str("component", "whatsmeow").Logger()
 		w.Client = whatsmeow.NewClient(w.Device, waLog.Zerolog(log))
 		w.Client.AddEventHandlerWithSuccessStatus(w.handleWAEvent)
 		w.Client.SynchronousAck = true
-		w.Client.EnableDecryptedEventBuffer = bridgev2.PortalEventBuffer == 0
+		w.Client.EnableDecryptedEventBuffer = wa.Bridge.Config.PortalEventBuffer == 0
 		w.Client.ManualHistorySyncDownload = true
 		w.Client.SendReportingTokens = true
 		w.Client.AutomaticMessageRerequestFromPhone = true
@@ -104,6 +106,7 @@ type WhatsAppClient struct {
 	Client    *whatsmeow.Client
 	Device    *store.Device
 	JID       types.JID
+	LID       types.JID
 	MC        mClient
 
 	historySyncWakeup  chan struct{}
@@ -113,15 +116,22 @@ type WhatsAppClient struct {
 	nextResync         time.Time
 	directMediaRetries map[networkid.MessageID]*directMediaRetry
 	directMediaLock    sync.Mutex
+	avatarLock         exsync.KeyedMutex[types.JID]
 	mediaRetryLock     *semaphore.Weighted
 	offlineSyncWaiter  atomic.Pointer[chan error]
 	isNewLogin         bool
 	pushNamesSynced    *exsync.Event
 	lastPresence       types.Presence
-	createDedup        *exsync.Set[types.MessageID]
+	blocklistLock      sync.Mutex
+
+	disableNewsletter bool
 
 	appStateRecoveryLock      sync.Mutex
 	appStateFullSyncAttempted map[appstate.WAPatchName]time.Time
+
+	wasaResyncLock         sync.Mutex
+	museProfileLock        sync.Mutex
+	lastMuseProfileRequest time.Time
 }
 
 var (
@@ -185,17 +195,33 @@ func (wa *WhatsAppClient) RegisterPushNotifications(ctx context.Context, pushTyp
 }
 
 func (wa *WhatsAppClient) IsThisUser(_ context.Context, userID networkid.UserID) bool {
-	return userID == waid.MakeUserID(wa.JID)
+	return userID == waid.MakeUserID(wa.JID) || userID == waid.MakeUserID(wa.GetLID())
+}
+
+func (wa *WhatsAppClient) IsOwnJID(jid types.JID) bool {
+	return (jid.Server == types.DefaultUserServer && jid.User == wa.JID.User) ||
+		(jid.Server == types.HiddenUserServer && jid.User == wa.GetLID().User)
+}
+
+func (wa *WhatsAppClient) GetLID() types.JID {
+	if wa.LID.IsEmpty() && !wa.JID.IsEmpty() {
+		wa.LID = wa.GetStore().GetLID()
+	}
+	return wa.LID
 }
 
 func (wa *WhatsAppClient) Connect(ctx context.Context) {
+	wa.connect(ctx)
+}
+
+func (wa *WhatsAppClient) connect(ctx context.Context) bool {
 	if wa.Client == nil {
 		state := status.BridgeState{
 			StateEvent: status.StateBadCredentials,
 			Error:      WANotLoggedIn,
 		}
 		wa.UserLogin.BridgeState.Send(state)
-		return
+		return false
 	}
 	wa.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnecting})
 	wa.Main.firstClientConnectOnce.Do(wa.Main.onFirstClientConnect)
@@ -203,7 +229,7 @@ func (wa *WhatsAppClient) Connect(ctx context.Context) {
 		zerolog.Ctx(ctx).Err(err).Msg("Failed to update proxy")
 	}
 	if ctx.Err() != nil {
-		return
+		return false
 	}
 	wa.initMC()
 	wa.startLoops()
@@ -220,7 +246,9 @@ func (wa *WhatsAppClient) Connect(ctx context.Context) {
 			},
 		}
 		wa.UserLogin.BridgeState.Send(state)
+		return false
 	}
+	return true
 }
 
 func (wa *WhatsAppClient) notifyOfflineSyncWaiter(err error) {
@@ -377,6 +405,10 @@ func (wa *WhatsAppClient) LogoutRemote(ctx context.Context) {
 	}
 	wa.Disconnect()
 	wa.Client = nil
+	err := wa.Main.DB.Conversation.DeleteAll(ctx, wa.UserLogin.ID)
+	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Msg("Failed to delete history sync data on logout")
+	}
 }
 
 func (wa *WhatsAppClient) IsLoggedIn() bool {
@@ -431,6 +463,10 @@ func (wa *WhatsAppClient) HandleMatrixViewingChat(ctx context.Context, msg *brid
 		if err != nil {
 			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to set presence when viewing chat")
 		}
+	}
+
+	if msg.Portal != nil && msg.Portal.ID == waid.MakePortalID(types.MuseJID) {
+		go wa.requestMuseProfile(ctx)
 	}
 
 	if msg.Portal == nil || msg.Portal.Metadata.(*waid.PortalMetadata).LastSync.Add(5*time.Minute).After(time.Now()) {
